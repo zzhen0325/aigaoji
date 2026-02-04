@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { Search, PieChart, TrendingUp, Menu, X, Sun, Moon, BadgeJapaneseYen, LogOut, Sparkles } from 'lucide-react';
+import { Search, PieChart, Menu, X, Sun, Moon, BadgeJapaneseYen, LogOut } from 'lucide-react';
 import { useTheme } from '../hooks/useTheme';
 import { useUserStore } from '../store/userStore';
 import { AuthModal } from './AuthModal';
@@ -17,7 +17,7 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   // Load users from JSON on mount
   React.useEffect(() => {
     loadUsers();
-  }, []);
+  }, [loadUsers]);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();

@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { StockRealtime } from '../types';
+import { StockRealtime } from '@/types';
 import dayjs from 'dayjs';
 
 // Helper to fix stock code prefix for Sina

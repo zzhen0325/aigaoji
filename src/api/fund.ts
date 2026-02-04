@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { FundInfo, FundHolding, FundValuation, StockRealtime } from '../types';
+import { FundInfo, FundHolding, FundValuation } from '@/types';
 import { getStockRealtime, getStockTrends } from './stock';
 import dayjs from 'dayjs';
 
@@ -21,15 +21,19 @@ export const searchFunds = async (keyword: string): Promise<FundInfo[]> => {
     if (jsonMatch) {
       parsedData = JSON.parse(jsonMatch[0].substring(1));
     } else if (typeof data === 'string') {
-      try { parsedData = JSON.parse(data); } catch (e) { console.error(e); }
+      try {
+        parsedData = JSON.parse(data);
+      } catch (error) {
+        console.error(error);
+      }
     }
 
     if (parsedData && parsedData.Datas) {
       console.log(`[API] Found ${parsedData.Datas.length} funds`);
-      return parsedData.Datas.map((item: any) => ({
+      return parsedData.Datas.map((item: { CODE: string; NAME: string; FundBaseInfo?: { FTYPE: string } }) => ({
         code: item.CODE,
         name: item.NAME,
-        type: item.FundBaseInfo ? item.FundBaseInfo.FTYPE : 'Unknown',
+        type: item.FundBaseInfo ? item.FundBaseInfo.FTYPE : 'Unknown'
       }));
     }
 
@@ -69,16 +73,18 @@ export const getFundDetails = async (code: string): Promise<FundInfo | null> => 
       code: codeMatch[1],
       name: nameMatch[1],
       type: typeMatch ? typeMatch[1] : 'Unknown',
-      establishDate: establishDateMatch ? establishDateMatch[1] : '',
+      establishDate: establishDateMatch ? establishDateMatch[1] : ''
     };
 
     if (managerMatch) {
       try {
         const managers = JSON.parse(managerMatch[1]);
         if (managers.length > 0) {
-          fund.manager = managers.map((m: any) => m.name).join(', ');
+          fund.manager = managers.map((m: { name: string }) => m.name).join(', ');
         }
-      } catch (e) { console.error(e); }
+      } catch (error) {
+        console.error(error);
+      }
     }
 
     if (netWorthMatch) {
@@ -88,11 +94,12 @@ export const getFundDetails = async (code: string): Promise<FundInfo | null> => 
           const lastPoint = netWorthTrend[netWorthTrend.length - 1];
           fund.netWorth = lastPoint.y;
           fund.netWorthDate = dayjs(lastPoint.x).format('YYYY-MM-DD');
-          fund.dayGrowth = lastPoint.equityReturn;
+          const change = typeof lastPoint.equityReturn === 'number' ? lastPoint.equityReturn : parseFloat(lastPoint.equityReturn);
+          fund.dayGrowth = Number.isFinite(change) ? `${change.toFixed(2)}%` : undefined;
           console.log(`[API] Net worth: ${fund.netWorth}, Date: ${fund.netWorthDate}`);
         }
-      } catch (e) {
-        console.error('[API] Failed to parse net worth trend:', e);
+      } catch (error) {
+        console.error('[API] Failed to parse net worth trend:', error);
       }
     }
 
@@ -123,7 +130,7 @@ export const getFundHoldings = async (code: string): Promise<FundHolding[]> => {
 
     console.log(`[API] Content extracted, length: ${contentMatch[1].length}`);
 
-    let html = contentMatch[1]
+    const html = contentMatch[1]
       .replace(/\\"/g, '"')
       .replace(/\\n/g, '\n')
       .replace(/\\r/g, '\r')
@@ -136,8 +143,8 @@ export const getFundHoldings = async (code: string): Promise<FundHolding[]> => {
 
     if (holdings.length > 0) {
       console.log(`[API] Successfully parsed ${holdings.length} holdings for ${code}`);
-      holdings.forEach((h, i) => {
-        console.log(`[API] Holding ${i + 1}: ${h.stockName} (${h.stockCode}) - ${h.weight}%`);
+      holdings.forEach((holding, index) => {
+        console.log(`[API] Holding ${index + 1}: ${holding.stockName} (${holding.stockCode}) - ${holding.weight}%`);
       });
     } else {
       console.warn(`[API] No holdings parsed for ${code}`);
@@ -161,19 +168,19 @@ export const getFundIntradayFromHoldings = async (code: string): Promise<{ time:
   const availableHoldings = holdings.filter(h => trendsMap[h.stockCode]?.points?.length);
   if (availableHoldings.length === 0) return [];
 
-  const totalWeight = availableHoldings.reduce((sum, h) => sum + h.weight, 0);
+  const totalWeight = availableHoldings.reduce((sum, holding) => sum + holding.weight, 0);
   if (totalWeight === 0) return [];
 
   const timeSet = new Set<string>();
   const seriesMap = new Map<string, Map<string, number>>();
-  availableHoldings.forEach((h) => {
-    const trend = trendsMap[h.stockCode];
+  availableHoldings.forEach((holding) => {
+    const trend = trendsMap[holding.stockCode];
     const map = new Map<string, number>();
-    trend.points.forEach((p) => {
-      timeSet.add(p.time);
-      map.set(p.time, p.price);
+    trend.points.forEach((point) => {
+      timeSet.add(point.time);
+      map.set(point.time, point.price);
     });
-    seriesMap.set(h.stockCode, map);
+    seriesMap.set(holding.stockCode, map);
   });
 
   const times = Array.from(timeSet).sort();
@@ -181,12 +188,12 @@ export const getFundIntradayFromHoldings = async (code: string): Promise<{ time:
 
   const series = times.map((time) => {
     let weighted = 0;
-    availableHoldings.forEach((h) => {
-      const trend = trendsMap[h.stockCode];
-      const price = seriesMap.get(h.stockCode)?.get(time);
+    availableHoldings.forEach((holding) => {
+      const trend = trendsMap[holding.stockCode];
+      const price = seriesMap.get(holding.stockCode)?.get(time);
       if (!price || !trend?.preClose) return;
       const changePercent = ((price - trend.preClose) / trend.preClose) * 100;
-      weighted += h.weight * changePercent;
+      weighted += holding.weight * changePercent;
     });
     const changePercent = (weighted / totalWeight) * STOCK_POSITION_RATIO;
     const value = fundInfo.netWorth * (1 + changePercent / 100);
@@ -209,11 +216,11 @@ const parseHoldingsFromHTML = (html: string): FundHolding[] => {
   console.log('[Parse] Found tbody');
   const tbody = tbodyMatch[1];
   const trRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
-  let match;
+  let match: RegExpExecArray | null;
   let rowCount = 0;
 
   while ((match = trRegex.exec(tbody)) !== null) {
-    rowCount++;
+    rowCount += 1;
     const row = match[1];
 
     if (!row.includes('quote.eastmoney.com')) continue;
@@ -244,7 +251,7 @@ const parseHoldingsFromHTML = (html: string): FundHolding[] => {
       stockName = candidates.length > 0 ? candidates[0][1] : nameMatches[0][1];
     }
 
-    const weightMatch = row.match(/>([\d\.]+)%</);
+    const weightMatch = row.match(/>([\d.]+)%</);
     if (weightMatch) {
       weight = parseFloat(weightMatch[1]);
     }
@@ -257,8 +264,8 @@ const parseHoldingsFromHTML = (html: string): FundHolding[] => {
 
       holdings.push({
         stockCode: fullCode,
-        stockName: stockName,
-        weight: weight,
+        stockName,
+        weight,
         market: marketPrefix
       });
     }
@@ -302,11 +309,11 @@ export const getFundValuation = async (code: string): Promise<FundValuation | nu
     let totalWeightedChange = 0;
     let totalWeight = 0;
 
-    const holdingsWithRealtime = holdings.map(holding => {
+    const holdingsWithRealtime = holdings.map((holding) => {
       const stock = stockPrices.find(s => s.code === holding.stockCode || s.code.endsWith(holding.stockCode));
 
       if (stock) {
-        totalWeightedChange += (holding.weight * stock.changePercent);
+        totalWeightedChange += holding.weight * stock.changePercent;
         totalWeight += holding.weight;
         return { stock: holding, realtime: stock };
       }

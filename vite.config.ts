@@ -80,7 +80,8 @@ export default defineConfig({
                 res.setHeader('Content-Type', 'application/json');
                 res.end('[]');
               }
-            } catch (e) {
+            } catch (error) {
+              console.error('Failed to read users', error);
               res.statusCode = 500;
               res.end(JSON.stringify({ error: 'Failed to read users' }));
             }
@@ -99,7 +100,8 @@ export default defineConfig({
                 fs.writeFileSync(filePath, body, 'utf-8');
                 res.setHeader('Content-Type', 'application/json');
                 res.end(JSON.stringify({ success: true }));
-              } catch (e) {
+              } catch (error) {
+                console.error('Failed to save users', error);
                 res.statusCode = 500;
                 res.end(JSON.stringify({ error: 'Failed to save users' }));
               }
@@ -123,7 +125,8 @@ export default defineConfig({
                 res.setHeader('Content-Type', 'application/json');
                 res.end('{}');
               }
-            } catch (e) {
+            } catch (error) {
+              console.error('Failed to read portfolios', error);
               res.statusCode = 500;
               res.end(JSON.stringify({ error: 'Failed to read portfolios' }));
             }
@@ -142,7 +145,8 @@ export default defineConfig({
                 fs.writeFileSync(filePath, body, 'utf-8');
                 res.setHeader('Content-Type', 'application/json');
                 res.end(JSON.stringify({ success: true }));
-              } catch (e) {
+              } catch (error) {
+                console.error('Failed to save portfolios', error);
                 res.statusCode = 500;
                 res.end(JSON.stringify({ error: 'Failed to save portfolios' }));
               }
@@ -173,6 +177,7 @@ export default defineConfig({
             if (contentType) res.setHeader('Content-Type', contentType);
             res.end(text);
           } catch (error) {
+            console.error('FundF10 proxy error', error);
             res.statusCode = 502;
             res.end('');
           }
@@ -193,6 +198,7 @@ export default defineConfig({
             if (contentType) res.setHeader('Content-Type', contentType);
             res.end(text);
           } catch (error) {
+            console.error('Stock trends proxy error', error);
             res.statusCode = 502;
             res.end('');
           }

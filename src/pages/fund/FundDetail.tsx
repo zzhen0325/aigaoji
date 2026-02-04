@@ -1,14 +1,36 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
-import { getFundDetails, getFundIntradayFromHoldings, getFundValuation } from '../../api/fund';
-import { FundInfo, FundValuation, UserPortfolio } from '../../types/index';
-import { ArrowUp, ArrowDown, RefreshCw, Clock, Info, Plus, BarChart3, PieChart, ArrowRightLeft } from 'lucide-react';
+import { getFundDetails, getFundIntradayFromHoldings, getFundValuation } from '@/api/fund';
+import { FundInfo, FundValuation, UserPortfolio } from '@/types';
+import { ArrowUp, ArrowDown, RefreshCw, Clock, Info, Plus, BarChart3, ArrowRightLeft } from 'lucide-react';
 import dayjs from 'dayjs';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
-import { useUserStore, getPortfolioKey } from '../../store/userStore';
-import { getUserPortfolio, saveUserPortfolio } from '../../api/portfolio';
+import { useUserStore } from '../../store/userStore';
+import { getUserPortfolio } from '../../api/portfolio';
 import { TransactionModal } from '../../components/TransactionModal';
 import { AddFundModal } from '../../components/AddFundModal';
+
+const isMarketOpenTime = (time: dayjs.Dayjs) => {
+  const minutes = time.hour() * 60 + time.minute();
+  const morningStart = 9 * 60 + 30;
+  const morningEnd = 11 * 60 + 30;
+  const afternoonStart = 13 * 60;
+  const afternoonEnd = 15 * 60;
+  return (minutes >= morningStart && minutes <= morningEnd) || (minutes >= afternoonStart && minutes <= afternoonEnd);
+};
+
+const clampToTradingLabel = (time: dayjs.Dayjs) => {
+  const minutes = time.hour() * 60 + time.minute();
+  const start = 9 * 60 + 30;
+  const end = 15 * 60;
+  if (minutes <= start) return '09:30';
+  if (minutes >= end) return '15:00';
+  return time.format('HH:mm');
+};
+
+const getIntradayStorageKey = (fundCode: string, date: string) => `intraday-${fundCode}-${date}`;
+const getIntradayLatestKey = (fundCode: string) => `intraday-${fundCode}-latest`;
+const getIntradayBackfillKey = (fundCode: string, date: string) => `intraday-${fundCode}-${date}-backfilled`;
 
 const FundDetail: React.FC = () => {
   const { code } = useParams<{ code: string }>();
@@ -23,66 +45,48 @@ const FundDetail: React.FC = () => {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const { currentUser } = useUserStore();
 
-  const loadUserFundInfo = async () => {
+  const loadUserFundInfo = useCallback(async () => {
     if (currentUser && code) {
       const portfolio = await getUserPortfolio(currentUser.username);
       const found = portfolio.find(p => p.fundCode === code);
       setUserFundInfo(found || null);
     }
-  };
+  }, [currentUser, code]);
 
   useEffect(() => {
     loadUserFundInfo();
-  }, [currentUser, code]);
+  }, [loadUserFundInfo]);
 
-  const isMarketOpenTime = (time: dayjs.Dayjs) => {
-    const minutes = time.hour() * 60 + time.minute();
-    const morningStart = 9 * 60 + 30;
-    const morningEnd = 11 * 60 + 30;
-    const afternoonStart = 13 * 60;
-    const afternoonEnd = 15 * 60;
-    return (minutes >= morningStart && minutes <= morningEnd) || (minutes >= afternoonStart && minutes <= afternoonEnd);
-  };
-
-  const clampToTradingLabel = (time: dayjs.Dayjs) => {
-    const minutes = time.hour() * 60 + time.minute();
-    const start = 9 * 60 + 30;
-    const end = 15 * 60;
-    if (minutes <= start) return '09:30';
-    if (minutes >= end) return '15:00';
-    return time.format('HH:mm');
-  };
-
-  const getIntradayStorageKey = (fundCode: string, date: string) => `intraday-${fundCode}-${date}`;
-  const getIntradayLatestKey = (fundCode: string) => `intraday-${fundCode}-latest`;
-  const getIntradayBackfillKey = (fundCode: string, date: string) => `intraday-${fundCode}-${date}-backfilled`;
-
-  const loadIntradayData = (fundCode: string) => {
+  const loadIntradayData = useCallback((fundCode: string) => {
     const todayKey = getIntradayStorageKey(fundCode, dayjs().format('YYYY-MM-DD'));
     const todayRaw = localStorage.getItem(todayKey);
     if (todayRaw) {
       try {
         const parsed = JSON.parse(todayRaw);
         if (Array.isArray(parsed)) return parsed;
-      } catch {}
+      } catch (e) {
+        console.error('Failed to parse intraday data from localStorage', e);
+      }
     }
     const latestRaw = localStorage.getItem(getIntradayLatestKey(fundCode));
     if (latestRaw) {
       try {
         const parsed = JSON.parse(latestRaw);
         if (Array.isArray(parsed?.data)) return parsed.data;
-      } catch {}
+      } catch (e) {
+        console.error('Failed to parse latest intraday data', e);
+      }
     }
     return [];
-  };
+  }, []);
 
-  const saveIntradayData = (fundCode: string, data: { time: string; value: number; changePercent: number }[]) => {
+  const saveIntradayData = useCallback((fundCode: string, data: { time: string; value: number; changePercent: number }[]) => {
     const dateKey = getIntradayStorageKey(fundCode, dayjs().format('YYYY-MM-DD'));
     localStorage.setItem(dateKey, JSON.stringify(data));
     localStorage.setItem(getIntradayLatestKey(fundCode), JSON.stringify({ date: dayjs().format('YYYY-MM-DD'), data }));
-  };
+  }, []);
 
-  const fetchData = async (isRefresh = false) => {
+  const fetchData = useCallback(async (isRefresh = false) => {
     if (!code) return;
     if (isRefresh) setRefreshing(true);
     else setLoading(true);
@@ -150,7 +154,7 @@ const FundDetail: React.FC = () => {
       setLoading(false);
       setRefreshing(false);
     }
-  };
+  }, [code, intradayData.length, saveIntradayData]);
 
   useEffect(() => {
     if (code) {
@@ -160,7 +164,7 @@ const FundDetail: React.FC = () => {
     fetchData();
     const timer = setInterval(() => fetchData(true), 30000);
     return () => clearInterval(timer);
-  }, [code]);
+  }, [code, fetchData, loadIntradayData]);
 
   if (loading && !info) {
     return (

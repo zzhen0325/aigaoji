@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { UserPortfolio } from '../types';
+import { UserPortfolio } from '@/types';
 
 export const loadPortfolios = async (): Promise<Record<string, UserPortfolio[]>> => {
   try {

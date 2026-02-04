@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ChevronRight, Sparkles, TrendingUp } from 'lucide-react';
-import { searchFunds } from '@/api/fund';
-import { FundInfo } from '@/types';
+import { searchFunds } from '../api/fund';
+
+import { FundInfo } from '../types';
 
 const Home: React.FC = () => {
   const [searchParams] = useSearchParams();
@@ -125,7 +126,7 @@ const Home: React.FC = () => {
   );
 };
 
-const RecommendedFundCard = ({ code, navigate }: { code: string, navigate: any }) => {
+const RecommendedFundCard = ({ code, navigate }: { code: string, navigate: (path: string) => void }) => {
     const names: Record<string, string> = {
         '000001': '华夏成长混合',
         '005827': '易方达蓝筹精选',

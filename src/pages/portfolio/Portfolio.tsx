@@ -1,12 +1,12 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { UserPortfolio, FundValuation } from '../../types/index';
-import { getFundValuation } from '../../api/fund';
+import { UserPortfolio, FundValuation } from '@/types';
+import { getFundValuation } from '@/api/fund';
 import { Trash2, RefreshCw, Plus, Wallet, ArrowUpRight, ArrowDownRight, ArrowRightLeft, Edit2, ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react';
-import { useUserStore, getPortfolioKey } from '../../store/userStore';
-import { getUserPortfolio, saveUserPortfolio } from '../../api/portfolio';
-import { AddFundModal } from '../../components/AddFundModal';
-import { TransactionModal } from '../../components/TransactionModal';
+import { useUserStore, getPortfolioKey } from '@/store/userStore';
+import { getUserPortfolio, saveUserPortfolio } from '@/api/portfolio';
+import { AddFundModal } from '@/components/AddFundModal';
+import { TransactionModal } from '@/components/TransactionModal';
 import dayjs from 'dayjs';
 
 const Portfolio: React.FC = () => {
@@ -22,7 +22,7 @@ const Portfolio: React.FC = () => {
   const navigate = useNavigate();
   const { currentUser } = useUserStore();
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     if (currentUser) {
       // Logged in: load from JSON persistence
       let data = await getUserPortfolio(currentUser.username);
@@ -40,7 +40,7 @@ const Portfolio: React.FC = () => {
           const pending = item.transactions.filter(t => !t.isReconciled);
           if (pending.length > 0) {
             let newHoldingAmount = item.holdingAmount;
-            let newHoldingProfit = item.holdingProfit;
+            const newHoldingProfit = item.holdingProfit;
             let updatedTransactions = [...item.transactions];
 
             updatedTransactions = updatedTransactions.map(t => {
@@ -68,9 +68,6 @@ const Portfolio: React.FC = () => {
         }
 
         // 2. Profit Update Rollover
-        // If the updateDate is not today, simply reset the manual profit flags.
-        // We do NOT add manualTodayProfit to holdingProfit because the user 
-        // confirmed that holdingProfit already includes it.
         if (item.isProfitUpToDate && item.updateDate !== today) {
           updatedItem = {
             ...updatedItem,
@@ -104,15 +101,15 @@ const Portfolio: React.FC = () => {
         setPortfolio([]);
       }
     }
-  };
+  }, [currentUser]);
 
   // Load portfolio from local storage based on user
   useEffect(() => {
     loadData();
-  }, [currentUser]);
+  }, [loadData]);
 
   // Fetch valuations
-  const fetchValuations = async () => {
+  const fetchValuations = useCallback(async () => {
     if (portfolio.length === 0) return;
     setLoading(true);
     try {
@@ -131,7 +128,7 @@ const Portfolio: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [portfolio]);
 
   useEffect(() => {
     if (portfolio.length > 0) {
@@ -139,7 +136,7 @@ const Portfolio: React.FC = () => {
       const timer = setInterval(fetchValuations, 60000);
       return () => clearInterval(timer);
     }
-  }, [portfolio.length]);
+  }, [portfolio.length, fetchValuations]);
 
   const updateItem = async (id: string, field: 'holdingAmount' | 'holdingProfit', value: string) => {
     const numValue = parseFloat(value);
@@ -194,11 +191,11 @@ const Portfolio: React.FC = () => {
   };
 
   const sortedPortfolio = React.useMemo(() => {
-    let sortableItems = [...portfolio];
+    const sortableItems = [...portfolio];
     if (sortConfig.key !== '' && sortConfig.direction !== null) {
       sortableItems.sort((a, b) => {
-        let aValue: any;
-        let bValue: any;
+        let aValue: string | number;
+        let bValue: string | number;
 
         const getCalculatedValues = (item: UserPortfolio) => {
           const valuation = valuations[item.fundCode];

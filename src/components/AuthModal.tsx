@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, User, Lock, Check } from 'lucide-react';
+import { X, User, Lock } from 'lucide-react';
 import { useUserStore } from '../store/userStore';
 
 interface AuthModalProps {

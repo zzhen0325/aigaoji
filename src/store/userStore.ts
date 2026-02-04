@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import axios from 'axios';
-import { User } from '../types';
+import { User } from '@/types';
 
 interface UserState {
   currentUser: User | null;
@@ -19,6 +19,7 @@ const getStoredCurrentUser = (): User | null => {
         const stored = localStorage.getItem('current_user');
         return stored ? JSON.parse(stored) : null;
     } catch (e) {
+        console.error('Failed to parse current user from localStorage', e);
         return null;
     }
 }

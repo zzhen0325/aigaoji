@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, ArrowUpCircle, ArrowDownCircle, Info, Clock, Check } from 'lucide-react';
+import { X, ArrowUpCircle, ArrowDownCircle, Clock, Check } from 'lucide-react';
 import { UserPortfolio, Transaction } from '@/types';
 import { useUserStore } from '@/store/userStore';
 import { getUserPortfolio, saveUserPortfolio } from '@/api/portfolio';
