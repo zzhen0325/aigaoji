@@ -33,6 +33,7 @@ const Portfolio: React.FC = () => {
 
   const getIntradayStorageKey = (fundCode: string, date: string) => `intraday-${fundCode}-${date}`;
   const getIntradayLatestKey = (fundCode: string) => `intraday-${fundCode}-latest`;
+  const getPortfolioIntradayKey = (date: string) => `portfolio-intraday-profit-${date}`;
 
   const loadIntradayData = useCallback((fundCode: string) => {
     const todayKey = getIntradayStorageKey(fundCode, dayjs().format('YYYY-MM-DD'));
@@ -63,6 +64,29 @@ const Portfolio: React.FC = () => {
     localStorage.setItem(getIntradayLatestKey(fundCode), JSON.stringify({ date: dayjs().format('YYYY-MM-DD'), data }));
   }, []);
 
+  const loadPortfolioIntradayCache = useCallback(() => {
+    const key = getPortfolioIntradayKey(dayjs().format('YYYY-MM-DD'));
+    const raw = localStorage.getItem(key);
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (e) {
+      console.error('Failed to parse portfolio intraday data', e);
+      return [];
+    }
+  }, []);
+
+  const savePortfolioIntradayCache = useCallback((data: { time: string; value: number }[]) => {
+    const key = getPortfolioIntradayKey(dayjs().format('YYYY-MM-DD'));
+    localStorage.setItem(key, JSON.stringify(data));
+  }, []);
+
+  const clearPortfolioIntradayCache = useCallback(() => {
+    const key = getPortfolioIntradayKey(dayjs().format('YYYY-MM-DD'));
+    localStorage.removeItem(key);
+  }, []);
+
   const loadPortfolioIntraday = useCallback(async () => {
     if (portfolio.length === 0) {
       setIntradayProfitData([]);
@@ -76,6 +100,20 @@ const Portfolio: React.FC = () => {
         if (!isUpToDate) return sum;
         return sum + (item.manualTodayProfit || 0);
       }, 0);
+
+      const totalDayProfitCurrent = portfolio.reduce((sum, item) => {
+        const isUpToDate = item.isProfitUpToDate && item.updateDate === today;
+        if (isUpToDate) return sum + (item.manualTodayProfit || 0);
+        const valuation = valuations[item.fundCode];
+        const changePercent = valuation?.changePercent || 0;
+        return sum + (item.holdingAmount * (changePercent / 100));
+      }, 0);
+
+      if (totalDayProfitCurrent === 0 && manualTotal === 0) {
+        setIntradayProfitData([]);
+        clearPortfolioIntradayCache();
+        return;
+      }
 
       const seriesList = await Promise.all(
         portfolio.map(async (item) => {
@@ -107,10 +145,12 @@ const Portfolio: React.FC = () => {
       const times = Array.from(timeMap.keys()).sort();
       if (times.length === 0) {
         if (manualTotal !== 0) {
-          setIntradayProfitData([
+          const data = [
             { time: '09:30', value: manualTotal },
             { time: '15:00', value: manualTotal }
-          ]);
+          ];
+          setIntradayProfitData(data);
+          savePortfolioIntradayCache(data);
         } else {
           setIntradayProfitData([]);
         }
@@ -122,10 +162,11 @@ const Portfolio: React.FC = () => {
         value: (timeMap.get(time) || 0) + manualTotal
       }));
       setIntradayProfitData(data);
+      savePortfolioIntradayCache(data);
     } finally {
       setIntradayLoading(false);
     }
-  }, [portfolio, loadIntradayData, saveIntradayData]);
+  }, [portfolio, valuations, loadIntradayData, saveIntradayData, savePortfolioIntradayCache, clearPortfolioIntradayCache]);
 
   const loadData = useCallback(async () => {
     if (currentUser) {
@@ -253,6 +294,10 @@ const Portfolio: React.FC = () => {
 
   useEffect(() => {
     if (portfolio.length > 0) {
+      const cached = loadPortfolioIntradayCache();
+      if (cached.length > 0) {
+        setIntradayProfitData(cached);
+      }
       void loadPortfolioIntraday();
       const timer = setInterval(() => {
         void loadPortfolioIntraday();
@@ -260,7 +305,7 @@ const Portfolio: React.FC = () => {
       return () => clearInterval(timer);
     }
     setIntradayProfitData([]);
-  }, [portfolio.length, loadPortfolioIntraday]);
+  }, [portfolio.length, loadPortfolioIntraday, loadPortfolioIntradayCache]);
 
   const updateItem = async (id: string, field: 'holdingAmount' | 'holdingProfit', value: string) => {
     const numValue = parseFloat(value);
