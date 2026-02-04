@@ -97,7 +97,7 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 
                 {/* User Auth UI */}
                 {currentUser ? (
-                    <div className="flex items-center space-x-3 ml-2 pl-2 border-l border-gray-200 dark:border-gray-700">
+                    <div className="flex items-center space-x-3 ml-2 pl-2  dark:border-gray-700">
                         <div className="flex items-center space-x-2">
                             <span className="text-2xl select-none">{currentUser.avatar}</span>
                             <span className="text-sm font-medium hidden md:block">{currentUser.username}</span>

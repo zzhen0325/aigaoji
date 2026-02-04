@@ -100,8 +100,10 @@ const FundDetail: React.FC = () => {
       setValuation(valData);
       const now = dayjs();
       setLastUpdated(now.format('HH:mm:ss'));
+      const isNetWorthStale = Boolean(infoData?.netWorthDate && dayjs(infoData.netWorthDate).isBefore(now, 'day'));
+      const shouldSkipIntradayCalc = isNetWorthStale && !isMarketOpenTime(now);
       const todayKey = getIntradayBackfillKey(code, now.format('YYYY-MM-DD'));
-      if (!isMarketOpenTime(now) && intradayData.length <= 2 && valData?.estimatedValue !== undefined && !localStorage.getItem(todayKey)) {
+      if (!shouldSkipIntradayCalc && !isMarketOpenTime(now) && intradayData.length <= 2 && valData?.estimatedValue !== undefined && !localStorage.getItem(todayKey)) {
         try {
           const backfilled = await getFundIntradayFromHoldings(code);
           if (backfilled.length >= 30) {
@@ -112,7 +114,7 @@ const FundDetail: React.FC = () => {
           localStorage.setItem(todayKey, '1');
         }
       }
-      if (valData?.estimatedValue !== undefined && isMarketOpenTime(now)) {
+      if (!shouldSkipIntradayCalc && valData?.estimatedValue !== undefined && isMarketOpenTime(now)) {
         setIntradayData((prev) => {
           const time = now.format('HH:mm');
           const point = { time, value: valData.estimatedValue, changePercent: valData.changePercent };

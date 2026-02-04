@@ -1,8 +1,8 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { UserPortfolio, FundValuation } from '@/types';
-import { getFundValuation } from '@/api/fund';
-import { Trash2, RefreshCw, Plus, Wallet, ArrowUpRight, ArrowDownRight, ArrowRightLeft, Edit2, ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react';
+import { getFundIntradayFromHoldings, getFundValuation } from '@/api/fund';
+import { Trash2, RefreshCw, Plus, Wallet, ArrowUpRight, ArrowDownRight, ArrowRightLeft, Edit2, ChevronUp, ChevronDown, ChevronsUpDown, Eye, EyeOff } from 'lucide-react';
 import { useUserStore, getPortfolioKey } from '@/store/userStore';
 import { getUserPortfolio, saveUserPortfolio } from '@/api/portfolio';
 import { AddFundModal } from '@/components/AddFundModal';
@@ -10,6 +10,7 @@ import { TransactionModal } from '@/components/TransactionModal';
 import { ConfirmModal } from '@/components/ConfirmModal';
 import dayjs from 'dayjs';
 import { useToast } from '@/components/ToastProvider';
+import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 
 const Portfolio: React.FC = () => {
   const [portfolio, setPortfolio] = useState<UserPortfolio[]>([]);
@@ -22,10 +23,109 @@ const Portfolio: React.FC = () => {
   const [pendingDelete, setPendingDelete] = useState<UserPortfolio | null>(null);
   const [editingField, setEditingField] = useState<{ id: string, field: 'holdingAmount' | 'holdingProfit' } | null>(null);
   const [sortConfig, setSortConfig] = useState<{ key: string, direction: 'asc' | 'desc' | null }>({ key: '', direction: null });
+  const [showValues, setShowValues] = useState(true);
+  const [intradayProfitData, setIntradayProfitData] = useState<{ time: string; value: number }[]>([]);
+  const [intradayLoading, setIntradayLoading] = useState(false);
   
   const navigate = useNavigate();
   const { currentUser } = useUserStore();
   const { showToast } = useToast();
+
+  const getIntradayStorageKey = (fundCode: string, date: string) => `intraday-${fundCode}-${date}`;
+  const getIntradayLatestKey = (fundCode: string) => `intraday-${fundCode}-latest`;
+
+  const loadIntradayData = useCallback((fundCode: string) => {
+    const todayKey = getIntradayStorageKey(fundCode, dayjs().format('YYYY-MM-DD'));
+    const todayRaw = localStorage.getItem(todayKey);
+    if (todayRaw) {
+      try {
+        const parsed = JSON.parse(todayRaw);
+        if (Array.isArray(parsed)) return parsed;
+      } catch (e) {
+        console.error('Failed to parse intraday data from localStorage', e);
+      }
+    }
+    const latestRaw = localStorage.getItem(getIntradayLatestKey(fundCode));
+    if (latestRaw) {
+      try {
+        const parsed = JSON.parse(latestRaw);
+        if (Array.isArray(parsed?.data)) return parsed.data;
+      } catch (e) {
+        console.error('Failed to parse latest intraday data', e);
+      }
+    }
+    return [];
+  }, []);
+
+  const saveIntradayData = useCallback((fundCode: string, data: { time: string; value: number; changePercent: number }[]) => {
+    const dateKey = getIntradayStorageKey(fundCode, dayjs().format('YYYY-MM-DD'));
+    localStorage.setItem(dateKey, JSON.stringify(data));
+    localStorage.setItem(getIntradayLatestKey(fundCode), JSON.stringify({ date: dayjs().format('YYYY-MM-DD'), data }));
+  }, []);
+
+  const loadPortfolioIntraday = useCallback(async () => {
+    if (portfolio.length === 0) {
+      setIntradayProfitData([]);
+      return;
+    }
+    setIntradayLoading(true);
+    try {
+      const today = dayjs().format('YYYY-MM-DD');
+      const manualTotal = portfolio.reduce((sum, item) => {
+        const isUpToDate = item.isProfitUpToDate && item.updateDate === today;
+        if (!isUpToDate) return sum;
+        return sum + (item.manualTodayProfit || 0);
+      }, 0);
+
+      const seriesList = await Promise.all(
+        portfolio.map(async (item) => {
+          const isUpToDate = item.isProfitUpToDate && item.updateDate === today;
+          if (isUpToDate) return [];
+          const cached = loadIntradayData(item.fundCode);
+          if (cached.length > 0) return cached;
+          const fetched = await getFundIntradayFromHoldings(item.fundCode);
+          if (fetched.length > 0) {
+            saveIntradayData(item.fundCode, fetched);
+            return fetched;
+          }
+          return [];
+        })
+      );
+
+      const timeMap = new Map<string, number>();
+      seriesList.forEach((series, index) => {
+        const item = portfolio[index];
+        const isUpToDate = item.isProfitUpToDate && item.updateDate === today;
+        if (isUpToDate) return;
+        series.forEach((point: { time: string; changePercent: number }) => {
+          const profit = item.holdingAmount * (point.changePercent / 100);
+          const existing = timeMap.get(point.time) || 0;
+          timeMap.set(point.time, existing + profit);
+        });
+      });
+
+      const times = Array.from(timeMap.keys()).sort();
+      if (times.length === 0) {
+        if (manualTotal !== 0) {
+          setIntradayProfitData([
+            { time: '09:30', value: manualTotal },
+            { time: '15:00', value: manualTotal }
+          ]);
+        } else {
+          setIntradayProfitData([]);
+        }
+        return;
+      }
+
+      const data = times.map((time) => ({
+        time,
+        value: (timeMap.get(time) || 0) + manualTotal
+      }));
+      setIntradayProfitData(data);
+    } finally {
+      setIntradayLoading(false);
+    }
+  }, [portfolio, loadIntradayData, saveIntradayData]);
 
   const loadData = useCallback(async () => {
     if (currentUser) {
@@ -150,6 +250,17 @@ const Portfolio: React.FC = () => {
       return () => clearInterval(timer);
     }
   }, [portfolio.length, fetchValuations]);
+
+  useEffect(() => {
+    if (portfolio.length > 0) {
+      void loadPortfolioIntraday();
+      const timer = setInterval(() => {
+        void loadPortfolioIntraday();
+      }, 300000);
+      return () => clearInterval(timer);
+    }
+    setIntradayProfitData([]);
+  }, [portfolio.length, loadPortfolioIntraday]);
 
   const updateItem = async (id: string, field: 'holdingAmount' | 'holdingProfit', value: string) => {
     const numValue = parseFloat(value);
@@ -338,6 +449,11 @@ const Portfolio: React.FC = () => {
     totalDayProfit += dayProfit;
     totalRealtimeProfit += totalProfit;
   });
+
+  const isTotalUp = totalDayProfit >= 0;
+  const strokeColor = isTotalUp
+    ? (document.documentElement.classList.contains('dark') ? '#F2B8B5' : '#B3261E')
+    : (document.documentElement.classList.contains('dark') ? '#6DD58C' : '#146C2E');
   
   return (
     <div className="space-y-8 max-w-6xl mx-auto pb-12">
@@ -354,6 +470,13 @@ const Portfolio: React.FC = () => {
                 className="flex items-center px-5 py-2.5 bg-google-surface dark:bg-google-surface-dark text-google-text dark:text-google-text-dark rounded-full text-sm font-medium hover:bg-gray-200 dark:hover:bg-[#2C2D2E] transition-colors"
             >
                 <Plus className="h-4 w-4 mr-2" /> 添加基金
+            </button>
+            <button 
+                onClick={() => setShowValues(!showValues)}
+                className="p-2.5 bg-google-surface dark:bg-google-surface-dark text-google-text-secondary dark:text-google-text-secondary-dark rounded-full hover:bg-gray-200 dark:hover:bg-[#2C2D2E] transition-colors"
+                title={showValues ? "隐藏金额" : "显示金额"}
+            >
+                {showValues ? <Eye className="h-5 w-5" /> : <EyeOff className="h-5 w-5" />}
             </button>
             <button 
                 onClick={fetchValuations}
@@ -385,7 +508,7 @@ const Portfolio: React.FC = () => {
                     <div className="relative z-10">
                         <div className="text-google-text-secondary dark:text-google-text-secondary-dark font-medium mb-2">总资产</div>
                         <div className="text-5xl font-normal text-google-text dark:text-google-text-dark tracking-tight">
-                            ¥{totalAsset.toFixed(2)}
+                            {showValues ? `¥${totalAsset.toFixed(2)}` : '****'}
                         </div>
                     </div>
                     <div className="absolute right-0 bottom-0 opacity-5 dark:opacity-5 transform translate-x-1/4 translate-y-1/4">
@@ -397,7 +520,7 @@ const Portfolio: React.FC = () => {
                      <div className="text-google-text-secondary dark:text-google-text-secondary-dark font-medium mb-1">预估当日盈亏</div>
                      <div className="flex items-center justify-between">
                         <div className={`text-3xl font-normal ${totalDayProfit >= 0 ? 'text-google-red dark:text-google-red-dark' : 'text-google-green dark:text-google-green-dark'}`}>
-                            {totalDayProfit > 0 ? '+' : ''}{totalDayProfit.toFixed(2)}
+                            {showValues ? `${totalDayProfit > 0 ? '+' : ''}${totalDayProfit.toFixed(2)}` : '****'}
                         </div>
                         {totalDayProfit >= 0 ? (
                             <ArrowUpRight className="h-8 w-8 text-google-red dark:text-google-red-dark opacity-50" />
@@ -411,7 +534,7 @@ const Portfolio: React.FC = () => {
                      <div className="text-google-text-secondary dark:text-google-text-secondary-dark font-medium mb-1">预估持有盈亏</div>
                      <div className="flex items-center justify-between">
                         <div className={`text-3xl font-normal ${totalRealtimeProfit >= 0 ? 'text-google-red dark:text-google-red-dark' : 'text-google-green dark:text-google-green-dark'}`}>
-                            {totalRealtimeProfit > 0 ? '+' : ''}{totalRealtimeProfit.toFixed(2)}
+                            {showValues ? `${totalRealtimeProfit > 0 ? '+' : ''}${totalRealtimeProfit.toFixed(2)}` : '****'}
                         </div>
                          {totalRealtimeProfit >= 0 ? (
                             <ArrowUpRight className="h-8 w-8 text-google-red dark:text-google-red-dark opacity-50" />
@@ -421,7 +544,61 @@ const Portfolio: React.FC = () => {
                      </div>
                 </div>
            </div>
-        
+
+          <div className="bg-google-surface dark:bg-google-surface-dark rounded-[24px] p-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-google-text-secondary dark:text-google-text-secondary-dark font-medium mb-1">当日盈亏分时</div>
+                <div className={`text-2xl font-normal ${isTotalUp ? 'text-google-red dark:text-google-red-dark' : 'text-google-green dark:text-google-green-dark'}`}>
+                  {showValues ? `${totalDayProfit > 0 ? '+' : ''}${totalDayProfit.toFixed(2)}` : '****'}
+                </div>
+              </div>
+              <div className="text-xs text-google-text-secondary dark:text-google-text-secondary-dark">
+                {intradayLoading ? '更新中' : (intradayProfitData.length ? `${intradayProfitData.length} 点` : '无分时数据')}
+              </div>
+            </div>
+            <div className="h-40 mt-4 w-full">
+              {intradayProfitData.length > 0 ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={intradayProfitData}>
+                    <defs>
+                      <linearGradient id="colorDayProfit" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor={strokeColor} stopOpacity={0.12} />
+                        <stop offset="95%" stopColor={strokeColor} stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <XAxis dataKey="time" hide />
+                    <YAxis domain={['auto', 'auto']} hide />
+                    <Tooltip
+                      contentStyle={{
+                        backgroundColor: '#1E1F20',
+                        borderColor: '#1E1F20',
+                        borderRadius: '12px',
+                        color: '#fff',
+                        boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)'
+                      }}
+                      itemStyle={{ color: '#E3E3E3' }}
+                      formatter={(value: number) => [showValues ? value.toFixed(2) : '****', '当日盈亏']}
+                      labelFormatter={(label) => `${label}`}
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="value"
+                      stroke={strokeColor}
+                      fillOpacity={1}
+                      fill="url(#colorDayProfit)"
+                      strokeWidth={2}
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
+              ) : (
+                <div className="h-full flex items-center justify-center text-sm text-google-text-secondary dark:text-google-text-secondary-dark">
+                  暂无分时数据
+                </div>
+              )}
+            </div>
+          </div>
+
           <div className="bg-white dark:bg-transparent rounded-[24px] border border-gray-200 dark:border-gray-800 overflow-hidden">
              <div className="overflow-x-auto">
               <table className="min-w-full">

@@ -9,6 +9,21 @@ const holdingCache = new Map<string, { expiresAt: number; value: FundHolding[] }
 const holdingInflight = new Map<string, Promise<FundHolding[]>>();
 const DETAIL_TTL = 5 * 60 * 1000;
 const HOLDING_TTL = 6 * 60 * 60 * 1000;
+const MARKET_OPEN_MINUTES = 9 * 60 + 30;
+
+const isBeforeMarketOpen = (time: dayjs.Dayjs) => {
+  const minutes = time.hour() * 60 + time.minute();
+  return minutes < MARKET_OPEN_MINUTES;
+};
+
+const isNetWorthStale = (netWorthDate: string | undefined, time: dayjs.Dayjs) => {
+  if (!netWorthDate) return false;
+  return dayjs(netWorthDate).isBefore(time, 'day');
+};
+
+const shouldSkipNetWorthCalculation = (netWorthDate: string | undefined, time: dayjs.Dayjs) => {
+  return isNetWorthStale(netWorthDate, time) && isBeforeMarketOpen(time);
+};
 
 export const searchFunds = async (keyword: string): Promise<FundInfo[]> => {
   if (!keyword) return [];
@@ -163,6 +178,8 @@ export const getFundHoldings = async (code: string): Promise<FundHolding[]> => {
 export const getFundIntradayFromHoldings = async (code: string): Promise<{ time: string; value: number; changePercent: number }[]> => {
   const fundInfo = await getFundDetails(code);
   if (!fundInfo?.netWorth) return [];
+  const now = dayjs();
+  if (shouldSkipNetWorthCalculation(fundInfo.netWorthDate, now)) return [];
   const holdings = await getFundHoldings(code);
   if (holdings.length === 0) return [];
 
@@ -277,6 +294,19 @@ export const getFundValuation = async (code: string): Promise<FundValuation | nu
     const fundInfo = await getFundDetails(code);
     if (!fundInfo || !fundInfo.netWorth) {
       throw new Error('Fund info or net worth not found');
+    }
+    const now = dayjs();
+    if (shouldSkipNetWorthCalculation(fundInfo.netWorthDate, now)) {
+      return {
+        fundCode: code,
+        estimatedValue: fundInfo.netWorth,
+        previousValue: fundInfo.netWorth,
+        change: 0,
+        changePercent: 0,
+        calculationTime: now.format('YYYY-MM-DD HH:mm:ss'),
+        holdings: [],
+        totalWeight: 0
+      };
     }
 
     const holdings = await getFundHoldings(code);
