@@ -1,0 +1,341 @@
+import axios from 'axios';
+import { FundInfo, FundHolding, FundValuation, StockRealtime } from '../types';
+import { getStockRealtime, getStockTrends } from './stock';
+import dayjs from 'dayjs';
+
+export const searchFunds = async (keyword: string): Promise<FundInfo[]> => {
+  console.log(`[API] searchFunds called with keyword: ${keyword}`);
+  if (!keyword) return [];
+
+  try {
+    const url = `/api/fund-search/FundSearch/api/FundSearchAPI.ashx?m=1&key=${keyword}`;
+    console.log(`[API] Requesting: ${url}`);
+
+    const response = await axios.get(url);
+    console.log(`[API] Response received, type: ${typeof response.data}`);
+
+    const data = response.data;
+    const jsonMatch = typeof data === 'string' ? data.match(/=\{.*?\}/) : null;
+    let parsedData = data;
+
+    if (jsonMatch) {
+      parsedData = JSON.parse(jsonMatch[0].substring(1));
+    } else if (typeof data === 'string') {
+      try { parsedData = JSON.parse(data); } catch (e) { console.error(e); }
+    }
+
+    if (parsedData && parsedData.Datas) {
+      console.log(`[API] Found ${parsedData.Datas.length} funds`);
+      return parsedData.Datas.map((item: any) => ({
+        code: item.CODE,
+        name: item.NAME,
+        type: item.FundBaseInfo ? item.FundBaseInfo.FTYPE : 'Unknown',
+      }));
+    }
+
+    return [];
+  } catch (error) {
+    console.error('[API] Failed to search funds:', error);
+    return [];
+  }
+};
+
+export const getFundDetails = async (code: string): Promise<FundInfo | null> => {
+  console.log(`[API] getFundDetails called for code: ${code}`);
+
+  try {
+    const url = `/api/fund/pingzhongdata/${code}.js?t=${Date.now()}`;
+    console.log(`[API] Requesting: ${url}`);
+
+    const response = await axios.get(url);
+    console.log(`[API] Response received, length: ${response.data?.length || 0}`);
+
+    const script = response.data;
+    const nameMatch = script.match(/fS_name\s*=\s*"([^"]+)"/);
+    const codeMatch = script.match(/fS_code\s*=\s*"([^"]+)"/);
+    const typeMatch = script.match(/fS_type\s*=\s*"([^"]+)"/);
+    const managerMatch = script.match(/Data_fundManager\s*=\s*(\[[\s\S]*?\]);/);
+    const establishDateMatch = script.match(/建立日期\s*[:：]\s*(\d{4}-\d{2}-\d{2})/);
+    const netWorthMatch = script.match(/Data_netWorthTrend\s*=\s*(\[[\s\S]*?\]);/);
+
+    console.log(`[API] Parsed - name: ${!!nameMatch}, code: ${!!codeMatch}, type: ${!!typeMatch}, manager: ${!!managerMatch}, netWorth: ${!!netWorthMatch}`);
+
+    if (!nameMatch || !codeMatch) {
+      console.warn('[API] Failed to parse fund basic info');
+      return null;
+    }
+
+    const fund: FundInfo = {
+      code: codeMatch[1],
+      name: nameMatch[1],
+      type: typeMatch ? typeMatch[1] : 'Unknown',
+      establishDate: establishDateMatch ? establishDateMatch[1] : '',
+    };
+
+    if (managerMatch) {
+      try {
+        const managers = JSON.parse(managerMatch[1]);
+        if (managers.length > 0) {
+          fund.manager = managers.map((m: any) => m.name).join(', ');
+        }
+      } catch (e) { console.error(e); }
+    }
+
+    if (netWorthMatch) {
+      try {
+        const netWorthTrend = JSON.parse(netWorthMatch[1]);
+        if (netWorthTrend.length > 0) {
+          const lastPoint = netWorthTrend[netWorthTrend.length - 1];
+          fund.netWorth = lastPoint.y;
+          fund.netWorthDate = dayjs(lastPoint.x).format('YYYY-MM-DD');
+          fund.dayGrowth = lastPoint.equityReturn;
+          console.log(`[API] Net worth: ${fund.netWorth}, Date: ${fund.netWorthDate}`);
+        }
+      } catch (e) {
+        console.error('[API] Failed to parse net worth trend:', e);
+      }
+    }
+
+    return fund;
+  } catch (error) {
+    console.error('[API] Failed to get fund details:', error);
+    return null;
+  }
+};
+
+export const getFundHoldings = async (code: string): Promise<FundHolding[]> => {
+  console.log(`[API] getFundHoldings called for code: ${code}`);
+
+  try {
+    const url = `/api/fundf10/FundArchivesDatas.aspx?type=jjcc&code=${code}&topline=10`;
+    console.log(`[API] Requesting: ${url}`);
+
+    const response = await axios.get(url, { timeout: 15000 });
+    console.log(`[API] Response received, type: ${typeof response.data}, length: ${response.data?.length || 0}`);
+
+    const script = response.data;
+    const contentMatch = script.match(/content\s*:\s*"((?:[^"\\]|\\.)*)"/);
+    if (!contentMatch) {
+      console.warn('[API] No content match in response');
+      console.log('[API] Response preview:', script.substring(0, 200));
+      return [];
+    }
+
+    console.log(`[API] Content extracted, length: ${contentMatch[1].length}`);
+
+    let html = contentMatch[1]
+      .replace(/\\"/g, '"')
+      .replace(/\\n/g, '\n')
+      .replace(/\\r/g, '\r')
+      .replace(/\\t/g, '\t')
+      .replace(/\\\//g, '/');
+
+    console.log(`[API] HTML unescaped, length: ${html.length}`);
+
+    const holdings = parseHoldingsFromHTML(html);
+
+    if (holdings.length > 0) {
+      console.log(`[API] Successfully parsed ${holdings.length} holdings for ${code}`);
+      holdings.forEach((h, i) => {
+        console.log(`[API] Holding ${i + 1}: ${h.stockName} (${h.stockCode}) - ${h.weight}%`);
+      });
+    } else {
+      console.warn(`[API] No holdings parsed for ${code}`);
+    }
+
+    return holdings;
+  } catch (error) {
+    console.error('[API] Failed to fetch holdings:', error);
+    return [];
+  }
+};
+
+export const getFundIntradayFromHoldings = async (code: string): Promise<{ time: string; value: number; changePercent: number }[]> => {
+  const fundInfo = await getFundDetails(code);
+  if (!fundInfo?.netWorth) return [];
+  const holdings = await getFundHoldings(code);
+  if (holdings.length === 0) return [];
+
+  const stockCodes = holdings.map(h => h.stockCode);
+  const trendsMap = await getStockTrends(stockCodes);
+  const availableHoldings = holdings.filter(h => trendsMap[h.stockCode]?.points?.length);
+  if (availableHoldings.length === 0) return [];
+
+  const totalWeight = availableHoldings.reduce((sum, h) => sum + h.weight, 0);
+  if (totalWeight === 0) return [];
+
+  const timeSet = new Set<string>();
+  const seriesMap = new Map<string, Map<string, number>>();
+  availableHoldings.forEach((h) => {
+    const trend = trendsMap[h.stockCode];
+    const map = new Map<string, number>();
+    trend.points.forEach((p) => {
+      timeSet.add(p.time);
+      map.set(p.time, p.price);
+    });
+    seriesMap.set(h.stockCode, map);
+  });
+
+  const times = Array.from(timeSet).sort();
+  const STOCK_POSITION_RATIO = 0.95;
+
+  const series = times.map((time) => {
+    let weighted = 0;
+    availableHoldings.forEach((h) => {
+      const trend = trendsMap[h.stockCode];
+      const price = seriesMap.get(h.stockCode)?.get(time);
+      if (!price || !trend?.preClose) return;
+      const changePercent = ((price - trend.preClose) / trend.preClose) * 100;
+      weighted += h.weight * changePercent;
+    });
+    const changePercent = (weighted / totalWeight) * STOCK_POSITION_RATIO;
+    const value = fundInfo.netWorth * (1 + changePercent / 100);
+    return { time, value, changePercent };
+  });
+
+  return series;
+};
+
+const parseHoldingsFromHTML = (html: string): FundHolding[] => {
+  console.log('[Parse] Starting HTML parsing');
+  const holdings: FundHolding[] = [];
+
+  const tbodyMatch = html.match(/<tbody[^>]*>([\s\S]*?)<\/tbody>/);
+  if (!tbodyMatch) {
+    console.warn('[Parse] No tbody found in HTML');
+    return holdings;
+  }
+
+  console.log('[Parse] Found tbody');
+  const tbody = tbodyMatch[1];
+  const trRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
+  let match;
+  let rowCount = 0;
+
+  while ((match = trRegex.exec(tbody)) !== null) {
+    rowCount++;
+    const row = match[1];
+
+    if (!row.includes('quote.eastmoney.com')) continue;
+
+    let marketPrefix = '';
+    let stockCode = '';
+    let stockName = 'Unknown';
+    let weight = 0;
+
+    const newFormatMatch = row.match(/href=['"][^'"]*unify\/r\/(\d+)\.(\w+)['"]/);
+    const oldFormatMatch = row.match(/href=['"][^'"]*quote\.eastmoney\.com\/(?:([a-z]+)\/)?([a-z]*)(\d+)\.html['"]/);
+
+    if (newFormatMatch) {
+      const marketId = newFormatMatch[1];
+      stockCode = newFormatMatch[2];
+      if (marketId === '1') marketPrefix = 'sh';
+      else if (marketId === '0') marketPrefix = 'sz';
+    } else if (oldFormatMatch) {
+      marketPrefix = oldFormatMatch[2] || oldFormatMatch[1] || '';
+      stockCode = oldFormatMatch[3];
+    }
+
+    if (!stockCode) continue;
+
+    const nameMatches = [...row.matchAll(/>([^<]{2,})<\/a>/g)];
+    if (nameMatches.length >= 1) {
+      const candidates = nameMatches.filter(m => m[1] !== stockCode && m[1].length > 2);
+      stockName = candidates.length > 0 ? candidates[0][1] : nameMatches[0][1];
+    }
+
+    const weightMatch = row.match(/>([\d\.]+)%</);
+    if (weightMatch) {
+      weight = parseFloat(weightMatch[1]);
+    }
+
+    if (stockCode && weight > 0) {
+      let fullCode = stockCode;
+      if (marketPrefix) {
+        fullCode = `${marketPrefix.toLowerCase()}${stockCode}`;
+      }
+
+      holdings.push({
+        stockCode: fullCode,
+        stockName: stockName,
+        weight: weight,
+        market: marketPrefix
+      });
+    }
+  }
+
+  console.log(`[Parse] Processed ${rowCount} rows, found ${holdings.length} valid holdings`);
+  return holdings;
+};
+
+export const getFundValuation = async (code: string): Promise<FundValuation | null> => {
+  console.log(`[API] getFundValuation called for code: ${code}`);
+
+  try {
+    const fundInfo = await getFundDetails(code);
+    if (!fundInfo || !fundInfo.netWorth) {
+      console.error('[API] Fund info or net worth not found');
+      throw new Error('Fund info or net worth not found');
+    }
+
+    const holdings = await getFundHoldings(code);
+    if (holdings.length === 0) {
+      console.warn('[API] No holdings found, returning static data');
+      return {
+        fundCode: code,
+        estimatedValue: fundInfo.netWorth,
+        previousValue: fundInfo.netWorth,
+        change: 0,
+        changePercent: 0,
+        calculationTime: dayjs().format('YYYY-MM-DD HH:mm:ss'),
+        holdings: [],
+        totalWeight: 0
+      };
+    }
+
+    console.log(`[API] Fetching realtime prices for ${holdings.length} stocks`);
+    const stockCodes = holdings.map(h => h.stockCode);
+    const stockPrices = await getStockRealtime(stockCodes);
+
+    console.log(`[API] Received ${stockPrices.length} stock prices`);
+
+    let totalWeightedChange = 0;
+    let totalWeight = 0;
+
+    const holdingsWithRealtime = holdings.map(holding => {
+      const stock = stockPrices.find(s => s.code === holding.stockCode || s.code.endsWith(holding.stockCode));
+
+      if (stock) {
+        totalWeightedChange += (holding.weight * stock.changePercent);
+        totalWeight += holding.weight;
+        return { stock: holding, realtime: stock };
+      }
+      return { stock: holding, realtime: null };
+    });
+
+    const validTotalWeight = totalWeight > 0 ? totalWeight : 100;
+    const STOCK_POSITION_RATIO = 0.95;
+
+    let estimatedChangePercent = (totalWeightedChange / validTotalWeight) * STOCK_POSITION_RATIO;
+    if (totalWeight === 0) estimatedChangePercent = 0;
+
+    const estimatedValue = fundInfo.netWorth * (1 + estimatedChangePercent / 100);
+    const changeValue = estimatedValue - fundInfo.netWorth;
+
+    console.log(`[API] Valuation calculated - Value: ${estimatedValue.toFixed(4)}, Change: ${estimatedChangePercent.toFixed(2)}%`);
+
+    return {
+      fundCode: code,
+      estimatedValue,
+      previousValue: fundInfo.netWorth,
+      change: changeValue,
+      changePercent: estimatedChangePercent,
+      calculationTime: dayjs().format('YYYY-MM-DD HH:mm:ss'),
+      holdings: holdingsWithRealtime,
+      totalWeight
+    };
+  } catch (error) {
+    console.error('[API] Failed to calculate valuation:', error);
+    return null;
+  }
+};
