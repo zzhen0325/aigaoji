@@ -1,6 +1,6 @@
 import { create } from 'zustand';
-import axios from 'axios';
 import { User } from '@/types';
+import { supabase } from '@/lib/supabaseClient';
 
 interface UserState {
   currentUser: User | null;
@@ -32,19 +32,26 @@ export const useUserStore = create<UserState>((set, get) => ({
   loadUsers: async () => {
     set({ isLoadingUsers: true });
     try {
-      const response = await axios.get('/api/local-users');
-      if (Array.isArray(response.data) && response.data.length > 0) {
-        set({ users: response.data });
-        localStorage.setItem('all_users', JSON.stringify(response.data));
+      const { data, error } = await supabase
+        .from('users')
+        .select('username,password,avatar')
+        .order('username');
+
+      if (error) {
+        throw error;
+      }
+
+      if (Array.isArray(data) && data.length > 0) {
+        set({ users: data });
+        localStorage.setItem('all_users', JSON.stringify(data));
       } else {
-        // Try fallback to localStorage
         const stored = localStorage.getItem('all_users');
         if (stored) {
           set({ users: JSON.parse(stored) });
         }
       }
     } catch (error) {
-      console.error('Failed to load users from JSON persistence', error);
+      console.error('Failed to load users from Supabase', error);
       const stored = localStorage.getItem('all_users');
       if (stored) {
         set({ users: JSON.parse(stored) });
@@ -73,20 +80,41 @@ export const useUserStore = create<UserState>((set, get) => ({
     if (currentUsers.some(u => u.username === newUser.username)) {
       return false; // User already exists
     }
-    
-    const updatedUsers = [...currentUsers, newUser];
-    
+
     try {
-      await axios.post('/api/local-users', updatedUsers);
+      const { data: existing, error: checkError } = await supabase
+        .from('users')
+        .select('username')
+        .eq('username', newUser.username)
+        .maybeSingle();
+
+      if (checkError) {
+        throw checkError;
+      }
+
+      if (existing) {
+        return false;
+      }
+
+      const { error } = await supabase
+        .from('users')
+        .insert({
+          username: newUser.username,
+          password: newUser.password,
+          avatar: newUser.avatar
+        });
+
+      if (error) {
+        throw error;
+      }
+
+      const updatedUsers = [...currentUsers, newUser];
       set({ users: updatedUsers });
       localStorage.setItem('all_users', JSON.stringify(updatedUsers));
       return true;
     } catch (error) {
-      console.error('Failed to save user to JSON', error);
-      // Even if API fails, save to localStorage to keep app functional in browser
-      set({ users: updatedUsers });
-      localStorage.setItem('all_users', JSON.stringify(updatedUsers));
-      return true;
+      console.error('Failed to save user to Supabase', error);
+      return false;
     }
   },
   
