@@ -1,0 +1,8 @@
+node_modules
+dist
+.trae
+*.cjs
+users.json
+portfolios.json
+debug_*.js
+check_*.js
