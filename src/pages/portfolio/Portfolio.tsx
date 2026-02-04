@@ -7,7 +7,9 @@ import { useUserStore, getPortfolioKey } from '@/store/userStore';
 import { getUserPortfolio, saveUserPortfolio } from '@/api/portfolio';
 import { AddFundModal } from '@/components/AddFundModal';
 import { TransactionModal } from '@/components/TransactionModal';
+import { ConfirmModal } from '@/components/ConfirmModal';
 import dayjs from 'dayjs';
+import { useToast } from '@/components/ToastProvider';
 
 const Portfolio: React.FC = () => {
   const [portfolio, setPortfolio] = useState<UserPortfolio[]>([]);
@@ -16,15 +18,26 @@ const Portfolio: React.FC = () => {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isTransactionModalOpen, setIsTransactionModalOpen] = useState(false);
   const [selectedFundForTrade, setSelectedFundForTrade] = useState<UserPortfolio | null>(null);
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<UserPortfolio | null>(null);
   const [editingField, setEditingField] = useState<{ id: string, field: 'holdingAmount' | 'holdingProfit' } | null>(null);
   const [sortConfig, setSortConfig] = useState<{ key: string, direction: 'asc' | 'desc' | null }>({ key: '', direction: null });
   
   const navigate = useNavigate();
   const { currentUser } = useUserStore();
+  const { showToast } = useToast();
 
   const loadData = useCallback(async () => {
     if (currentUser) {
       // Logged in: load from JSON persistence
+      const stored = localStorage.getItem('all_portfolios');
+      if (stored) {
+        const all = JSON.parse(stored) as Record<string, UserPortfolio[]>;
+        if (Array.isArray(all[currentUser.username])) {
+          setPortfolio(all[currentUser.username]);
+        }
+      }
+
       let data = await getUserPortfolio(currentUser.username);
       
       // Reconciliation logic
@@ -86,7 +99,7 @@ const Portfolio: React.FC = () => {
       });
 
       if (needsSave) {
-        await saveUserPortfolio(currentUser.username, reconciledData);
+        void saveUserPortfolio(currentUser.username, reconciledData);
         data = reconciledData;
       }
       
@@ -140,7 +153,10 @@ const Portfolio: React.FC = () => {
 
   const updateItem = async (id: string, field: 'holdingAmount' | 'holdingProfit', value: string) => {
     const numValue = parseFloat(value);
-    if (isNaN(numValue)) return;
+    if (isNaN(numValue)) {
+      showToast('请输入有效的数字', 'error');
+      return;
+    }
     
     const newPortfolio = portfolio.map(item => {
       if (item.id === id) {
@@ -150,25 +166,47 @@ const Portfolio: React.FC = () => {
     });
     setPortfolio(newPortfolio);
     
-    if (currentUser) {
-      await saveUserPortfolio(currentUser.username, newPortfolio);
-    } else {
-      const key = getPortfolioKey();
-      localStorage.setItem(key, JSON.stringify(newPortfolio));
-    }
-  };
-
-  const deleteItem = async (id: string) => {
-    if (confirm('确认删除该基金吗？')) {
-      const newPortfolio = portfolio.filter(item => item.id !== id);
-      setPortfolio(newPortfolio);
-      
+    try {
       if (currentUser) {
         await saveUserPortfolio(currentUser.username, newPortfolio);
       } else {
         const key = getPortfolioKey();
         localStorage.setItem(key, JSON.stringify(newPortfolio));
       }
+      showToast('更新成功', 'success');
+    } catch (error) {
+      console.error(error);
+      showToast('更新失败，请重试', 'error');
+    }
+  };
+
+  const openDeleteModal = (item: UserPortfolio) => {
+    setPendingDelete(item);
+    setIsDeleteModalOpen(true);
+  };
+
+  const closeDeleteModal = () => {
+    setIsDeleteModalOpen(false);
+    setPendingDelete(null);
+  };
+
+  const confirmDelete = async () => {
+    if (!pendingDelete) return;
+    const id = pendingDelete.id;
+    const newPortfolio = portfolio.filter(item => item.id !== id);
+    setPortfolio(newPortfolio);
+    try {
+      if (currentUser) {
+        await saveUserPortfolio(currentUser.username, newPortfolio);
+      } else {
+        const key = getPortfolioKey();
+        localStorage.setItem(key, JSON.stringify(newPortfolio));
+      }
+      showToast('删除成功', 'success');
+      closeDeleteModal();
+    } catch (error) {
+      console.error(error);
+      showToast('删除失败，请重试', 'error');
     }
   };
 
@@ -544,7 +582,7 @@ const Portfolio: React.FC = () => {
                                     <ArrowRightLeft className="h-4 w-4" />
                                 </button>
                                 <button 
-                                    onClick={() => deleteItem(item.id)}
+                                    onClick={() => openDeleteModal(item)}
                                     className="text-google-text-secondary dark:text-google-text-secondary-dark hover:text-google-red dark:hover:text-google-red-dark transition-colors p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800"
                                     title="删除"
                                 >
@@ -571,6 +609,15 @@ const Portfolio: React.FC = () => {
         onClose={() => setIsTransactionModalOpen(false)}
         fund={selectedFundForTrade}
         onSuccess={loadData}
+      />
+      <ConfirmModal
+        isOpen={isDeleteModalOpen}
+        title="删除该基金"
+        description={pendingDelete ? `将移除 ${pendingDelete.fundName} (${pendingDelete.fundCode}) 的持仓记录` : ''}
+        confirmText="删除"
+        cancelText="取消"
+        onConfirm={confirmDelete}
+        onCancel={closeDeleteModal}
       />
     </div>
   );

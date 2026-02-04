@@ -8,7 +8,7 @@ interface UserState {
   isLoadingUsers: boolean;
   login: (user: User) => void;
   logout: () => void;
-  register: (user: User) => Promise<boolean>; // returns success
+  register: (user: User) => Promise<{ success: boolean; reason?: string }>;
   checkUser: (username: string) => User | undefined;
   loadUsers: () => Promise<void>;
 }
@@ -78,7 +78,7 @@ export const useUserStore = create<UserState>((set, get) => ({
     
     const currentUsers = get().users;
     if (currentUsers.some(u => u.username === newUser.username)) {
-      return false; // User already exists
+      return { success: false, reason: '用户名已存在' };
     }
 
     try {
@@ -93,7 +93,7 @@ export const useUserStore = create<UserState>((set, get) => ({
       }
 
       if (existing) {
-        return false;
+        return { success: false, reason: '用户名已存在' };
       }
 
       const { error } = await supabase
@@ -111,10 +111,13 @@ export const useUserStore = create<UserState>((set, get) => ({
       const updatedUsers = [...currentUsers, newUser];
       set({ users: updatedUsers });
       localStorage.setItem('all_users', JSON.stringify(updatedUsers));
-      return true;
+      return { success: true };
     } catch (error) {
       console.error('Failed to save user to Supabase', error);
-      return false;
+      if (error instanceof Error) {
+        return { success: false, reason: error.message };
+      }
+      return { success: false, reason: '保存失败' };
     }
   },
   

@@ -3,17 +3,19 @@ import { FundInfo, FundHolding, FundValuation } from '@/types';
 import { getStockRealtime, getStockTrends } from './stock';
 import dayjs from 'dayjs';
 
+const detailCache = new Map<string, { expiresAt: number; value: FundInfo | null }>();
+const detailInflight = new Map<string, Promise<FundInfo | null>>();
+const holdingCache = new Map<string, { expiresAt: number; value: FundHolding[] }>();
+const holdingInflight = new Map<string, Promise<FundHolding[]>>();
+const DETAIL_TTL = 5 * 60 * 1000;
+const HOLDING_TTL = 6 * 60 * 60 * 1000;
+
 export const searchFunds = async (keyword: string): Promise<FundInfo[]> => {
-  console.log(`[API] searchFunds called with keyword: ${keyword}`);
   if (!keyword) return [];
 
   try {
     const url = `/api/fund-search/FundSearch/api/FundSearchAPI.ashx?m=1&key=${keyword}`;
-    console.log(`[API] Requesting: ${url}`);
-
     const response = await axios.get(url);
-    console.log(`[API] Response received, type: ${typeof response.data}`);
-
     const data = response.data;
     const jsonMatch = typeof data === 'string' ? data.match(/=\{.*?\}/) : null;
     let parsedData = data;
@@ -29,7 +31,6 @@ export const searchFunds = async (keyword: string): Promise<FundInfo[]> => {
     }
 
     if (parsedData && parsedData.Datas) {
-      console.log(`[API] Found ${parsedData.Datas.length} funds`);
       return parsedData.Datas.map((item: { CODE: string; NAME: string; FundBaseInfo?: { FTYPE: string } }) => ({
         code: item.CODE,
         name: item.NAME,
@@ -45,116 +46,118 @@ export const searchFunds = async (keyword: string): Promise<FundInfo[]> => {
 };
 
 export const getFundDetails = async (code: string): Promise<FundInfo | null> => {
-  console.log(`[API] getFundDetails called for code: ${code}`);
-
-  try {
-    const url = `/api/fund/pingzhongdata/${code}.js?t=${Date.now()}`;
-    console.log(`[API] Requesting: ${url}`);
-
-    const response = await axios.get(url);
-    console.log(`[API] Response received, length: ${response.data?.length || 0}`);
-
-    const script = response.data;
-    const nameMatch = script.match(/fS_name\s*=\s*"([^"]+)"/);
-    const codeMatch = script.match(/fS_code\s*=\s*"([^"]+)"/);
-    const typeMatch = script.match(/fS_type\s*=\s*"([^"]+)"/);
-    const managerMatch = script.match(/Data_fundManager\s*=\s*(\[[\s\S]*?\]);/);
-    const establishDateMatch = script.match(/建立日期\s*[:：]\s*(\d{4}-\d{2}-\d{2})/);
-    const netWorthMatch = script.match(/Data_netWorthTrend\s*=\s*(\[[\s\S]*?\]);/);
-
-    console.log(`[API] Parsed - name: ${!!nameMatch}, code: ${!!codeMatch}, type: ${!!typeMatch}, manager: ${!!managerMatch}, netWorth: ${!!netWorthMatch}`);
-
-    if (!nameMatch || !codeMatch) {
-      console.warn('[API] Failed to parse fund basic info');
-      return null;
-    }
-
-    const fund: FundInfo = {
-      code: codeMatch[1],
-      name: nameMatch[1],
-      type: typeMatch ? typeMatch[1] : 'Unknown',
-      establishDate: establishDateMatch ? establishDateMatch[1] : ''
-    };
-
-    if (managerMatch) {
-      try {
-        const managers = JSON.parse(managerMatch[1]);
-        if (managers.length > 0) {
-          fund.manager = managers.map((m: { name: string }) => m.name).join(', ');
-        }
-      } catch (error) {
-        console.error(error);
-      }
-    }
-
-    if (netWorthMatch) {
-      try {
-        const netWorthTrend = JSON.parse(netWorthMatch[1]);
-        if (netWorthTrend.length > 0) {
-          const lastPoint = netWorthTrend[netWorthTrend.length - 1];
-          fund.netWorth = lastPoint.y;
-          fund.netWorthDate = dayjs(lastPoint.x).format('YYYY-MM-DD');
-          const change = typeof lastPoint.equityReturn === 'number' ? lastPoint.equityReturn : parseFloat(lastPoint.equityReturn);
-          fund.dayGrowth = Number.isFinite(change) ? `${change.toFixed(2)}%` : undefined;
-          console.log(`[API] Net worth: ${fund.netWorth}, Date: ${fund.netWorthDate}`);
-        }
-      } catch (error) {
-        console.error('[API] Failed to parse net worth trend:', error);
-      }
-    }
-
-    return fund;
-  } catch (error) {
-    console.error('[API] Failed to get fund details:', error);
-    return null;
+  const cached = detailCache.get(code);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.value;
   }
+  const inflight = detailInflight.get(code);
+  if (inflight) return inflight;
+
+  const request = (async () => {
+    try {
+      const url = `/api/fund/pingzhongdata/${code}.js?t=${Date.now()}`;
+      const response = await axios.get(url);
+      const script = response.data;
+      const nameMatch = script.match(/fS_name\s*=\s*"([^"]+)"/);
+      const codeMatch = script.match(/fS_code\s*=\s*"([^"]+)"/);
+      const typeMatch = script.match(/fS_type\s*=\s*"([^"]+)"/);
+      const managerMatch = script.match(/Data_fundManager\s*=\s*(\[[\s\S]*?\]);/);
+      const establishDateMatch = script.match(/建立日期\s*[:：]\s*(\d{4}-\d{2}-\d{2})/);
+      const netWorthMatch = script.match(/Data_netWorthTrend\s*=\s*(\[[\s\S]*?\]);/);
+
+      if (!nameMatch || !codeMatch) {
+        detailCache.set(code, { expiresAt: Date.now() + DETAIL_TTL, value: null });
+        return null;
+      }
+
+      const fund: FundInfo = {
+        code: codeMatch[1],
+        name: nameMatch[1],
+        type: typeMatch ? typeMatch[1] : 'Unknown',
+        establishDate: establishDateMatch ? establishDateMatch[1] : ''
+      };
+
+      if (managerMatch) {
+        try {
+          const managers = JSON.parse(managerMatch[1]);
+          if (managers.length > 0) {
+            fund.manager = managers.map((m: { name: string }) => m.name).join(', ');
+          }
+        } catch (error) {
+          console.error(error);
+        }
+      }
+
+      if (netWorthMatch) {
+        try {
+          const netWorthTrend = JSON.parse(netWorthMatch[1]);
+          if (netWorthTrend.length > 0) {
+            const lastPoint = netWorthTrend[netWorthTrend.length - 1];
+            fund.netWorth = lastPoint.y;
+            fund.netWorthDate = dayjs(lastPoint.x).format('YYYY-MM-DD');
+            const change = typeof lastPoint.equityReturn === 'number' ? lastPoint.equityReturn : parseFloat(lastPoint.equityReturn);
+            fund.dayGrowth = Number.isFinite(change) ? `${change.toFixed(2)}%` : undefined;
+          }
+        } catch (error) {
+          console.error(error);
+        }
+      }
+
+      detailCache.set(code, { expiresAt: Date.now() + DETAIL_TTL, value: fund });
+      return fund;
+    } catch (error) {
+      console.error('[API] Failed to get fund details:', error);
+      detailCache.set(code, { expiresAt: Date.now() + DETAIL_TTL, value: null });
+      return null;
+    } finally {
+      detailInflight.delete(code);
+    }
+  })();
+
+  detailInflight.set(code, request);
+  return request;
 };
 
 export const getFundHoldings = async (code: string): Promise<FundHolding[]> => {
-  console.log(`[API] getFundHoldings called for code: ${code}`);
-
-  try {
-    const url = `/api/fundf10/FundArchivesDatas.aspx?type=jjcc&code=${code}&topline=10`;
-    console.log(`[API] Requesting: ${url}`);
-
-    const response = await axios.get(url, { timeout: 15000 });
-    console.log(`[API] Response received, type: ${typeof response.data}, length: ${response.data?.length || 0}`);
-
-    const script = response.data;
-    const contentMatch = script.match(/content\s*:\s*"((?:[^"\\]|\\.)*)"/);
-    if (!contentMatch) {
-      console.warn('[API] No content match in response');
-      console.log('[API] Response preview:', script.substring(0, 200));
-      return [];
-    }
-
-    console.log(`[API] Content extracted, length: ${contentMatch[1].length}`);
-
-    const html = contentMatch[1]
-      .replace(/\\"/g, '"')
-      .replace(/\\n/g, '\n')
-      .replace(/\\r/g, '\r')
-      .replace(/\\t/g, '\t')
-      .replace(/\\\//g, '/');
-
-    console.log(`[API] HTML unescaped, length: ${html.length}`);
-
-    const holdings = parseHoldingsFromHTML(html);
-
-    if (holdings.length > 0) {
-      console.log(`[API] Successfully parsed ${holdings.length} holdings for ${code}`);
-      holdings.forEach((holding, index) => {
-        console.log(`[API] Holding ${index + 1}: ${holding.stockName} (${holding.stockCode}) - ${holding.weight}%`);
-      });
-    } else {
-      console.warn(`[API] No holdings parsed for ${code}`);
-    }
-
-    return holdings;
-  } catch (error) {
-    console.error('[API] Failed to fetch holdings:', error);
-    return [];
+  const cached = holdingCache.get(code);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.value;
   }
+  const inflight = holdingInflight.get(code);
+  if (inflight) return inflight;
+
+  const request = (async () => {
+    try {
+      const url = `/api/fundf10/FundArchivesDatas.aspx?type=jjcc&code=${code}&topline=10`;
+      const response = await axios.get(url, { timeout: 15000 });
+      const script = response.data;
+      const contentMatch = script.match(/content\s*:\s*"((?:[^"\\]|\\.)*)"/);
+      if (!contentMatch) {
+        holdingCache.set(code, { expiresAt: Date.now() + HOLDING_TTL, value: [] });
+        return [];
+      }
+
+      const html = contentMatch[1]
+        .replace(/\\"/g, '"')
+        .replace(/\\n/g, '\n')
+        .replace(/\\r/g, '\r')
+        .replace(/\\t/g, '\t')
+        .replace(/\\\//g, '/');
+
+      const holdings = parseHoldingsFromHTML(html);
+      holdingCache.set(code, { expiresAt: Date.now() + HOLDING_TTL, value: holdings });
+      return holdings;
+    } catch (error) {
+      console.error('[API] Failed to fetch holdings:', error);
+      holdingCache.set(code, { expiresAt: Date.now() + HOLDING_TTL, value: [] });
+      return [];
+    } finally {
+      holdingInflight.delete(code);
+    }
+  })();
+
+  holdingInflight.set(code, request);
+  return request;
 };
 
 export const getFundIntradayFromHoldings = async (code: string): Promise<{ time: string; value: number; changePercent: number }[]> => {
@@ -204,23 +207,18 @@ export const getFundIntradayFromHoldings = async (code: string): Promise<{ time:
 };
 
 const parseHoldingsFromHTML = (html: string): FundHolding[] => {
-  console.log('[Parse] Starting HTML parsing');
   const holdings: FundHolding[] = [];
 
   const tbodyMatch = html.match(/<tbody[^>]*>([\s\S]*?)<\/tbody>/);
   if (!tbodyMatch) {
-    console.warn('[Parse] No tbody found in HTML');
     return holdings;
   }
 
-  console.log('[Parse] Found tbody');
   const tbody = tbodyMatch[1];
   const trRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
   let match: RegExpExecArray | null;
-  let rowCount = 0;
 
   while ((match = trRegex.exec(tbody)) !== null) {
-    rowCount += 1;
     const row = match[1];
 
     if (!row.includes('quote.eastmoney.com')) continue;
@@ -271,23 +269,18 @@ const parseHoldingsFromHTML = (html: string): FundHolding[] => {
     }
   }
 
-  console.log(`[Parse] Processed ${rowCount} rows, found ${holdings.length} valid holdings`);
   return holdings;
 };
 
 export const getFundValuation = async (code: string): Promise<FundValuation | null> => {
-  console.log(`[API] getFundValuation called for code: ${code}`);
-
   try {
     const fundInfo = await getFundDetails(code);
     if (!fundInfo || !fundInfo.netWorth) {
-      console.error('[API] Fund info or net worth not found');
       throw new Error('Fund info or net worth not found');
     }
 
     const holdings = await getFundHoldings(code);
     if (holdings.length === 0) {
-      console.warn('[API] No holdings found, returning static data');
       return {
         fundCode: code,
         estimatedValue: fundInfo.netWorth,
@@ -300,11 +293,8 @@ export const getFundValuation = async (code: string): Promise<FundValuation | nu
       };
     }
 
-    console.log(`[API] Fetching realtime prices for ${holdings.length} stocks`);
     const stockCodes = holdings.map(h => h.stockCode);
     const stockPrices = await getStockRealtime(stockCodes);
-
-    console.log(`[API] Received ${stockPrices.length} stock prices`);
 
     let totalWeightedChange = 0;
     let totalWeight = 0;
@@ -328,8 +318,6 @@ export const getFundValuation = async (code: string): Promise<FundValuation | nu
 
     const estimatedValue = fundInfo.netWorth * (1 + estimatedChangePercent / 100);
     const changeValue = estimatedValue - fundInfo.netWorth;
-
-    console.log(`[API] Valuation calculated - Value: ${estimatedValue.toFixed(4)}, Change: ${estimatedChangePercent.toFixed(2)}%`);
 
     return {
       fundCode: code,

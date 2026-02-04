@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X, User, Lock } from 'lucide-react';
 import { useUserStore } from '../store/userStore';
+import { useToast } from '@/components/ToastProvider';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -17,6 +18,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
   const [error, setError] = useState('');
   
   const { login, register, checkUser } = useUserStore();
+  const { showToast } = useToast();
 
   if (!isOpen) return null;
 
@@ -34,29 +36,33 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
       if (user && user.password === password) {
         login(user);
         onClose();
+        showToast('登录成功', 'success');
         // Reset form
         setUsername('');
         setPassword('');
       } else {
         setError('用户名或密码错误');
+        showToast('用户名或密码错误', 'error');
       }
     } else {
       // Register
-      const success = await register({
+      const result = await register({
         username,
         password,
         avatar: selectedAvatar
       });
       
-      if (success) {
+      if (result.success) {
         // Auto login after register
         login({ username, password, avatar: selectedAvatar });
         onClose();
+        showToast('注册成功', 'success');
         // Reset form
         setUsername('');
         setPassword('');
       } else {
-        setError('用户名已存在');
+        setError(result.reason || '注册失败');
+        showToast(result.reason || '注册失败', 'error');
       }
     }
   };

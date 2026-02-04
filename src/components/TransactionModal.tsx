@@ -5,6 +5,7 @@ import { useUserStore } from '@/store/userStore';
 import { getUserPortfolio, saveUserPortfolio } from '@/api/portfolio';
 import { getTradeStatusInfo } from '@/utils/tradingUtils';
 import dayjs from 'dayjs';
+import { useToast } from '@/components/ToastProvider';
 
 interface TransactionModalProps {
   isOpen: boolean;
@@ -18,6 +19,7 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({ isOpen, onCl
   const [type, setType] = useState<'buy' | 'sell'>('buy');
   const [tradeInfo, setTradeInfo] = useState(getTradeStatusInfo());
   const { currentUser } = useUserStore();
+  const { showToast } = useToast();
 
   useEffect(() => {
     if (isOpen) {
@@ -37,12 +39,12 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({ isOpen, onCl
     
     const numAmount = parseFloat(amount);
     if (isNaN(numAmount) || numAmount <= 0) {
-      alert('请输入有效的金额');
+      showToast('请输入有效的金额', 'error');
       return;
     }
 
     if (type === 'sell' && numAmount > fund.holdingAmount) {
-      alert('卖出金额不能超过当前持仓');
+      showToast('卖出金额不能超过当前持仓', 'error');
       return;
     }
 
@@ -71,9 +73,10 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({ isOpen, onCl
       await saveUserPortfolio(currentUser.username, updatedPortfolio);
       onSuccess();
       onClose();
+      showToast(`${type === 'buy' ? '加仓' : '减仓'}提交成功`, 'success');
     } catch (error) {
       console.error('Transaction failed:', error);
-      alert('交易失败，请重试');
+      showToast('交易失败，请重试', 'error');
     }
   };
 

@@ -4,6 +4,7 @@ import { Search, PieChart, Menu, X, Sun, Moon, BadgeJapaneseYen, LogOut } from '
 import { useTheme } from '../hooks/useTheme';
 import { useUserStore } from '../store/userStore';
 import { AuthModal } from './AuthModal';
+import { useToast } from '@/components/ToastProvider';
 
 const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const location = useLocation();
@@ -13,6 +14,7 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [searchKeyword, setSearchKeyword] = React.useState('');
   const { isDark, toggleTheme } = useTheme();
   const { currentUser, logout, loadUsers } = useUserStore();
+  const { showToast } = useToast();
 
   // Load users from JSON on mount
   React.useEffect(() => {
@@ -23,6 +25,11 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     e.preventDefault();
     if (!searchKeyword.trim()) return;
     navigate(`/?q=${encodeURIComponent(searchKeyword.trim())}`);
+  };
+
+  const handleLogout = () => {
+    logout();
+    showToast('已退出登录', 'info');
   };
 
   const isActive = (path: string) => location.pathname === path;
@@ -96,7 +103,7 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                             <span className="text-sm font-medium hidden md:block">{currentUser.username}</span>
                         </div>
                         <button
-                            onClick={logout}
+                            onClick={handleLogout}
                             className="p-2 rounded-full text-google-text-secondary dark:text-google-text-secondary-dark hover:bg-gray-100 dark:hover:bg-google-surface-dark transition-colors"
                             title="退出登录"
                         >

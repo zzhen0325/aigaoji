@@ -5,6 +5,7 @@ import { FundInfo, UserPortfolio } from '@/types';
 import { useUserStore, getPortfolioKey } from '@/store/userStore';
 import { getUserPortfolio, saveUserPortfolio } from '@/api/portfolio';
 import dayjs from 'dayjs';
+import { useToast } from '@/components/ToastProvider';
 
 interface AddFundModalProps {
   isOpen: boolean;
@@ -24,6 +25,7 @@ export const AddFundModal: React.FC<AddFundModalProps> = ({ isOpen, onClose, onA
   const [todayProfitInput, setTodayProfitInput] = useState('');
   
   const { currentUser } = useUserStore();
+  const { showToast } = useToast();
 
   useEffect(() => {
     if (!isOpen) {
@@ -61,14 +63,20 @@ export const AddFundModal: React.FC<AddFundModalProps> = ({ isOpen, onClose, onA
 
     let portfolio: UserPortfolio[] = [];
     if (currentUser) {
-      portfolio = await getUserPortfolio(currentUser.username);
+      const stored = localStorage.getItem('all_portfolios');
+      if (stored) {
+        const all = JSON.parse(stored) as Record<string, UserPortfolio[]>;
+        portfolio = all[currentUser.username] || [];
+      } else {
+        portfolio = await getUserPortfolio(currentUser.username);
+      }
     } else {
       const key = getPortfolioKey();
       portfolio = JSON.parse(localStorage.getItem(key) || '[]');
     }
 
     if (portfolio.find(p => p.fundCode === selectedFund.code)) {
-      alert('该基金已在持仓中');
+      showToast('该基金已在持仓中', 'error');
       return;
     }
 
@@ -88,7 +96,11 @@ export const AddFundModal: React.FC<AddFundModalProps> = ({ isOpen, onClose, onA
     const newPortfolio = [...portfolio, newItem];
 
     if (currentUser) {
-      await saveUserPortfolio(currentUser.username, newPortfolio);
+      const stored = localStorage.getItem('all_portfolios');
+      const all = stored ? (JSON.parse(stored) as Record<string, UserPortfolio[]>) : {};
+      all[currentUser.username] = newPortfolio;
+      localStorage.setItem('all_portfolios', JSON.stringify(all));
+      void saveUserPortfolio(currentUser.username, newPortfolio);
     } else {
       const key = getPortfolioKey();
       localStorage.setItem(key, JSON.stringify(newPortfolio));
@@ -96,6 +108,7 @@ export const AddFundModal: React.FC<AddFundModalProps> = ({ isOpen, onClose, onA
 
     onAdded();
     onClose();
+    showToast('添加成功', 'success');
   };
 
   if (!isOpen) return null;

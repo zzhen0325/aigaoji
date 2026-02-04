@@ -2,6 +2,12 @@ import axios from 'axios';
 import { StockRealtime } from '@/types';
 import dayjs from 'dayjs';
 
+const realtimeCache = new Map<string, { expiresAt: number; value: StockRealtime }>();
+const REALTIME_TTL = 15000;
+const trendsCache = new Map<string, { expiresAt: number; value: { preClose: number; points: { time: string; price: number }[] } }>();
+const trendsInflight = new Map<string, Promise<{ preClose: number; points: { time: string; price: number }[] } | null>>();
+const TRENDS_TTL = 60000;
+
 // Helper to fix stock code prefix for Sina
 const formatStockCode = (code: string, market?: string) => {
   const cleanCode = code.toLowerCase();
@@ -28,7 +34,20 @@ export const getStockRealtime = async (codes: string[]): Promise<StockRealtime[]
   
   const formattedCodes = codes.map(c => formatStockCode(c));
   const uniqueCodes = [...new Set(formattedCodes)];
-  const listParam = uniqueCodes.join(',');
+  const now = Date.now();
+  const missingCodes = uniqueCodes.filter(code => {
+    const cached = realtimeCache.get(code);
+    return !cached || cached.expiresAt <= now;
+  });
+  const cachedResults: StockRealtime[] = uniqueCodes
+    .map(code => realtimeCache.get(code)?.value)
+    .filter((item): item is StockRealtime => Boolean(item));
+
+  if (missingCodes.length === 0) {
+    return cachedResults;
+  }
+
+  const listParam = missingCodes.join(',');
   
   try {
     const response = await axios.get(`/api/stock/list=${listParam}`, {
@@ -91,7 +110,7 @@ export const getStockRealtime = async (codes: string[]): Promise<StockRealtime[]
           const change = price - preClose;
           const changePercent = preClose > 0 ? (change / preClose) * 100 : 0;
           
-          results.push({
+          const item: StockRealtime = {
             code,
             name,
             currentPrice: price,
@@ -102,15 +121,17 @@ export const getStockRealtime = async (codes: string[]): Promise<StockRealtime[]
             low,
             volume,
             time: `${date} ${time}`
-          });
+          };
+          results.push(item);
+          realtimeCache.set(code, { expiresAt: Date.now() + REALTIME_TTL, value: item });
       }
     });
     
-    return results;
+    return [...cachedResults, ...results];
     
   } catch (error) {
     console.error('Failed to get stock realtime', error);
-    return [];
+    return cachedResults;
   }
 };
 
@@ -121,30 +142,53 @@ export const getStockTrends = async (codes: string[]): Promise<Record<string, { 
   const result: Record<string, { preClose: number; points: { time: string; price: number }[] }> = {};
 
   await Promise.all(uniqueCodes.map(async (code) => {
-    const secid = code.startsWith('sh')
-      ? `1.${code.replace(/^sh/, '')}`
-      : code.startsWith('sz')
-        ? `0.${code.replace(/^sz/, '')}`
-        : code.startsWith('bj')
-          ? `0.${code.replace(/^bj/, '')}`
-          : '';
-    if (!secid) return;
-    try {
-      const url = `/api/stock-trends/api/qt/stock/trends2/get?secid=${secid}&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13&fields2=f51,f52,f53,f54,f55,f56,f57,f58&ut=fa5fd1943c7b386f172d6893dbfba10b&ndays=1&iscr=0&iscca=0`;
-      const response = await axios.get(url);
-      const data = response.data?.data;
-      if (!data || !Array.isArray(data.trends)) return;
-      const series = data.trends.map((item: string) => {
-        const parts = item.split(',');
-        return { time: parts[0].slice(11, 16), price: parseFloat(parts[1]) };
-      }).filter(p => !Number.isNaN(p.price));
-      const preClose = typeof data.preClose === 'number' ? data.preClose : parseFloat(data.preClose);
-      if (!Number.isNaN(preClose)) {
-        result[code] = { preClose, points: series };
-      }
-    } catch (error) {
-      console.error('Failed to get stock trends', error);
+    const cached = trendsCache.get(code);
+    if (cached && cached.expiresAt > Date.now()) {
+      result[code] = cached.value;
+      return;
     }
+    const inflight = trendsInflight.get(code);
+    if (inflight) {
+      const value = await inflight;
+      if (value) result[code] = value;
+      return;
+    }
+
+    const request = (async () => {
+      const secid = code.startsWith('sh')
+        ? `1.${code.replace(/^sh/, '')}`
+        : code.startsWith('sz')
+          ? `0.${code.replace(/^sz/, '')}`
+          : code.startsWith('bj')
+            ? `0.${code.replace(/^bj/, '')}`
+            : '';
+      if (!secid) return null;
+      try {
+        const url = `/api/stock-trends/api/qt/stock/trends2/get?secid=${secid}&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13&fields2=f51,f52,f53,f54,f55,f56,f57,f58&ut=fa5fd1943c7b386f172d6893dbfba10b&ndays=1&iscr=0&iscca=0`;
+        const response = await axios.get(url);
+        const data = response.data?.data;
+        if (!data || !Array.isArray(data.trends)) return null;
+        const series = data.trends.map((item: string) => {
+          const parts = item.split(',');
+          return { time: parts[0].slice(11, 16), price: parseFloat(parts[1]) };
+        }).filter(p => !Number.isNaN(p.price));
+        const preClose = typeof data.preClose === 'number' ? data.preClose : parseFloat(data.preClose);
+        if (!Number.isNaN(preClose)) {
+          const value = { preClose, points: series };
+          trendsCache.set(code, { expiresAt: Date.now() + TRENDS_TTL, value });
+          return value;
+        }
+      } catch (error) {
+        console.error('Failed to get stock trends', error);
+      } finally {
+        trendsInflight.delete(code);
+      }
+      return null;
+    })();
+
+    trendsInflight.set(code, request);
+    const value = await request;
+    if (value) result[code] = value;
   }));
 
   return result;
