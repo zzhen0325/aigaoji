@@ -32,17 +32,22 @@ export const useUserStore = create<UserState>((set, get) => ({
     set({ isLoadingUsers: true });
     try {
       const response = await axios.get('/api/local-users');
-      if (Array.isArray(response.data)) {
+      if (Array.isArray(response.data) && response.data.length > 0) {
         set({ users: response.data });
-        
-        // Also sync to localStorage as a backup or cache if needed, 
-        // but the prompt asked for JSON persistence.
-        // We will trust the API response as the source of truth.
+        localStorage.setItem('all_users', JSON.stringify(response.data));
+      } else {
+        // Try fallback to localStorage
+        const stored = localStorage.getItem('all_users');
+        if (stored) {
+          set({ users: JSON.parse(stored) });
+        }
       }
     } catch (error) {
       console.error('Failed to load users from JSON persistence', error);
-      // Fallback to localStorage if API fails?
-      // For now, let's stick to the requested JSON requirement.
+      const stored = localStorage.getItem('all_users');
+      if (stored) {
+        set({ users: JSON.parse(stored) });
+      }
     } finally {
       set({ isLoadingUsers: false });
     }
@@ -73,10 +78,14 @@ export const useUserStore = create<UserState>((set, get) => ({
     try {
       await axios.post('/api/local-users', updatedUsers);
       set({ users: updatedUsers });
+      localStorage.setItem('all_users', JSON.stringify(updatedUsers));
       return true;
     } catch (error) {
       console.error('Failed to save user to JSON', error);
-      return false;
+      // Even if API fails, save to localStorage to keep app functional in browser
+      set({ users: updatedUsers });
+      localStorage.setItem('all_users', JSON.stringify(updatedUsers));
+      return true;
     }
   },
   

@@ -1,0 +1,41 @@
+{
+  "version": 2,
+  "rewrites": [
+    {
+      "source": "/api/fund-search(.*)",
+      "destination": "/api/fund-search"
+    },
+    {
+      "source": "/api/fund-holdings(.*)",
+      "destination": "/api/fund-holdings"
+    },
+    {
+      "source": "/api/stock-trends(.*)",
+      "destination": "/api/stock-trends"
+    },
+    {
+      "source": "/api/stock(.*)",
+      "destination": "/api/stock"
+    },
+    {
+      "source": "/api/fundf10(.*)",
+      "destination": "/api/fundf10"
+    },
+    {
+      "source": "/api/fund(.*)",
+      "destination": "/api/fund"
+    },
+    {
+      "source": "/api/local-users",
+      "destination": "/api/local-users"
+    },
+    {
+      "source": "/api/local-portfolios",
+      "destination": "/api/local-portfolios"
+    },
+    {
+      "source": "/((?!api/).*)",
+      "destination": "/index.html"
+    }
+  ]
+}

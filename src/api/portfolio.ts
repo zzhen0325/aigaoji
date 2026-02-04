@@ -4,15 +4,22 @@ import { UserPortfolio } from '../types';
 export const loadPortfolios = async (): Promise<Record<string, UserPortfolio[]>> => {
   try {
     const response = await axios.get('/api/local-portfolios');
-    return response.data || {};
+    if (response.data && Object.keys(response.data).length > 0) {
+      localStorage.setItem('all_portfolios', JSON.stringify(response.data));
+      return response.data;
+    }
+    const stored = localStorage.getItem('all_portfolios');
+    return stored ? JSON.parse(stored) : {};
   } catch (error) {
     console.error('Failed to load portfolios from JSON persistence', error);
-    return {};
+    const stored = localStorage.getItem('all_portfolios');
+    return stored ? JSON.parse(stored) : {};
   }
 };
 
 export const savePortfolios = async (portfolios: Record<string, UserPortfolio[]>) => {
   try {
+    localStorage.setItem('all_portfolios', JSON.stringify(portfolios));
     await axios.post('/api/local-portfolios', portfolios);
   } catch (error) {
     console.error('Failed to save portfolios to JSON', error);
