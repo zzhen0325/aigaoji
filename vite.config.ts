@@ -18,6 +18,16 @@ export default defineConfig({
           'Referer': 'https://fund.eastmoney.com/'
         }
       },
+      '/api/fundgz': {
+        target: 'https://fundgz.1234567.com.cn',
+        changeOrigin: true,
+        secure: false,
+        rewrite: (path) => path.replace(/^\/api\/fundgz/, ''),
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Referer': 'https://fundgz.1234567.com.cn/'
+        }
+      },
       '/api/fund-holdings': {
         target: 'https://fundmobapi.eastmoney.com',
         changeOrigin: true,

@@ -25,6 +25,46 @@ const shouldSkipNetWorthCalculation = (netWorthDate: string | undefined, time: d
   return isNetWorthStale(netWorthDate, time) && isBeforeMarketOpen(time);
 };
 
+const parseFundGzResponse = (data: unknown) => {
+  if (typeof data !== 'string') return null;
+  const match = data.match(/jsonpgz\((\{.*\})\);?/);
+  if (!match) return null;
+  try {
+    return JSON.parse(match[1]);
+  } catch (error) {
+    console.error(error);
+    return null;
+  }
+};
+
+const getFundGzEstimate = async (code: string) => {
+  try {
+    const url = `/api/fundgz/js/${code}.js?rt=${Date.now()}`;
+    const response = await axios.get(url);
+    const parsed = parseFundGzResponse(response.data);
+    if (!parsed) return null;
+    const estimatedValue = parseFloat(parsed.gsz);
+    const previousValue = parseFloat(parsed.dwjz);
+    const changePercent = parseFloat(parsed.gszzl);
+    if (!Number.isFinite(estimatedValue)) return null;
+    const baseValue = Number.isFinite(previousValue) ? previousValue : estimatedValue;
+    const change = estimatedValue - baseValue;
+    const resolvedChangePercent = Number.isFinite(changePercent)
+      ? changePercent
+      : baseValue > 0 ? (change / baseValue) * 100 : 0;
+    return {
+      estimatedValue,
+      previousValue: baseValue,
+      change,
+      changePercent: resolvedChangePercent,
+      calculationTime: parsed.gztime || dayjs().format('YYYY-MM-DD HH:mm:ss')
+    };
+  } catch (error) {
+    console.error('[API] Failed to get fund gz estimate:', error);
+    return null;
+  }
+};
+
 export const searchFunds = async (keyword: string): Promise<FundInfo[]> => {
   if (!keyword) return [];
 
@@ -293,6 +333,15 @@ export const getFundValuation = async (code: string): Promise<FundValuation | nu
   try {
     const fundInfo = await getFundDetails(code);
     if (!fundInfo || !fundInfo.netWorth) {
+      const gzEstimate = await getFundGzEstimate(code);
+      if (gzEstimate) {
+        return {
+          fundCode: code,
+          ...gzEstimate,
+          holdings: [],
+          totalWeight: 0
+        };
+      }
       throw new Error('Fund info or net worth not found');
     }
     const now = dayjs();
@@ -311,6 +360,15 @@ export const getFundValuation = async (code: string): Promise<FundValuation | nu
 
     const holdings = await getFundHoldings(code);
     if (holdings.length === 0) {
+      const gzEstimate = await getFundGzEstimate(code);
+      if (gzEstimate) {
+        return {
+          fundCode: code,
+          ...gzEstimate,
+          holdings: [],
+          totalWeight: 0
+        };
+      }
       return {
         fundCode: code,
         estimatedValue: fundInfo.netWorth,
