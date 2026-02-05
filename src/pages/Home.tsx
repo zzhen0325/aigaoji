@@ -39,11 +39,11 @@ const Home: React.FC = () => {
   return (
     <div className="max-w-4xl mx-auto space-y-10">
       {!hasSearched && (
-        <div className="space-y-4 py-10 text-center md:text-left">
-          <h1 className="text-5xl md:text-6xl font-normal text-transparent bg-clip-text bg-gradient-to-r from-google-primary to-[#4285F4] dark:from-google-primary-dark dark:to-[#8AB4F8] tracking-tight">
+        <div className="space-y-3 sm:space-y-4 py-6 sm:py-10 text-center md:text-left px-1">
+          <h1 className="text-3xl sm:text-5xl md:text-6xl font-normal text-transparent bg-clip-text bg-gradient-to-r from-google-primary to-[#4285F4] dark:from-google-primary-dark dark:to-[#8AB4F8] tracking-tight">
             你好，基金投资者
           </h1>
-          <p className="text-2xl text-google-text-secondary dark:text-google-text-secondary-dark font-light">
+          <p className="text-lg sm:text-2xl text-google-text-secondary dark:text-google-text-secondary-dark font-light">
             今天想查询哪只基金？
           </p>
         </div>
@@ -71,23 +71,23 @@ const Home: React.FC = () => {
                         <div
                             key={fund.code}
                             onClick={() => navigate(`/fund/${fund.code}`)}
-                            className="bg-google-surface dark:bg-google-surface-dark rounded-2xl p-5 hover:bg-gray-200 dark:hover:bg-[#2C2D2E] cursor-pointer transition-colors border border-transparent hover:border-google-outline/20 group"
+                            className="bg-google-surface dark:bg-google-surface-dark rounded-2xl p-4 sm:p-5 hover:bg-gray-200 dark:hover:bg-[#2C2D2E] cursor-pointer transition-colors border border-transparent hover:border-google-outline/20 group"
                         >
                             <div className="flex justify-between items-start">
                                 <div>
-                                    <h4 className="text-lg font-medium text-google-text dark:text-google-text-dark group-hover:text-google-primary dark:group-hover:text-google-primary-dark transition-colors">
+                                    <h4 className="text-base sm:text-lg font-medium text-google-text dark:text-google-text-dark group-hover:text-google-primary dark:group-hover:text-google-primary-dark transition-colors">
                                         {fund.name}
                                     </h4>
-                                    <div className="flex items-center space-x-2 mt-2">
-                                        <span className="text-sm font-mono bg-white dark:bg-black/30 px-2 py-0.5 rounded text-google-text-secondary dark:text-google-text-secondary-dark">
+                                    <div className="flex items-center space-x-2 mt-1.5 sm:mt-2">
+                                        <span className="text-xs sm:text-sm font-mono bg-white dark:bg-black/30 px-1.5 sm:px-2 py-0.5 rounded text-google-text-secondary dark:text-google-text-secondary-dark">
                                             {fund.code}
                                         </span>
-                                        <span className="text-sm text-google-text-secondary dark:text-google-text-secondary-dark">
+                                        <span className="text-xs sm:text-sm text-google-text-secondary dark:text-google-text-secondary-dark">
                                             {fund.type}
                                         </span>
                                     </div>
                                 </div>
-                                <ChevronRight className="h-5 w-5 text-google-text-secondary dark:text-google-text-secondary-dark opacity-0 group-hover:opacity-100 transition-opacity" />
+                                <ChevronRight className="h-4 w-4 sm:h-5 sm:w-5 text-google-text-secondary dark:text-google-text-secondary-dark opacity-0 group-hover:opacity-100 transition-opacity" />
                             </div>
                         </div>
                     ))}
@@ -137,20 +137,20 @@ const RecommendedFundCard = ({ code, navigate }: { code: string, navigate: (path
     return (
         <div 
             onClick={() => navigate(`/fund/${code}`)}
-            className="bg-google-surface dark:bg-google-surface-dark p-5 rounded-2xl hover:bg-gray-200 dark:hover:bg-[#2C2D2E] cursor-pointer transition-colors border border-transparent hover:border-google-outline/20 h-full flex flex-col justify-between"
+            className="bg-google-surface dark:bg-google-surface-dark p-4 sm:p-5 rounded-2xl hover:bg-gray-200 dark:hover:bg-[#2C2D2E] cursor-pointer transition-colors border border-transparent hover:border-google-outline/20 h-full flex flex-col justify-between"
         >
             <div>
-                <div className="flex justify-between items-start mb-3">
-                    <span className="text-xs font-medium text-google-primary dark:text-google-primary-dark bg-google-primary/10 dark:bg-google-primary-dark/10 px-2 py-1 rounded-full">
+                <div className="flex justify-between items-start mb-2 sm:mb-3">
+                    <span className="text-[10px] sm:text-xs font-medium text-google-primary dark:text-google-primary-dark bg-google-primary/10 dark:bg-google-primary-dark/10 px-1.5 sm:px-2 py-0.5 sm:py-1 rounded-full">
                         热门
                     </span>
-                    <TrendingUp className="h-4 w-4 text-google-text-secondary dark:text-google-text-secondary-dark" />
+                    <TrendingUp className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-google-text-secondary dark:text-google-text-secondary-dark" />
                 </div>
-                <h3 className="font-medium text-google-text dark:text-google-text-dark line-clamp-2 mb-1">
+                <h3 className="text-sm sm:text-base font-medium text-google-text dark:text-google-text-dark line-clamp-2 mb-1">
                     {names[code]}
                 </h3>
             </div>
-            <p className="text-sm text-google-text-secondary dark:text-google-text-secondary-dark font-mono mt-2">
+            <p className="text-xs sm:text-sm text-google-text-secondary dark:text-google-text-secondary-dark font-mono mt-1.5 sm:mt-2">
                 {code}
             </p>
         </div>

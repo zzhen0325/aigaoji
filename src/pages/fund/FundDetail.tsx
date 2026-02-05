@@ -19,6 +19,13 @@ const isMarketOpenTime = (time: dayjs.Dayjs) => {
   return (minutes >= morningStart && minutes <= morningEnd) || (minutes >= afternoonStart && minutes <= afternoonEnd);
 };
 
+const isAnyMarketOpenTime = (time: dayjs.Dayjs) => {
+  const minutes = time.hour() * 60 + time.minute();
+  const isAOpen = (minutes >= 9 * 60 + 30 && minutes <= 11 * 60 + 30) || (minutes >= 13 * 60 && minutes <= 15 * 60);
+  const isHKOpen = (minutes >= 9 * 60 + 30 && minutes <= 12 * 60) || (minutes >= 13 * 60 && minutes <= 16 * 60);
+  return isAOpen || isHKOpen;
+};
+
 const clampToTradingLabel = (time: dayjs.Dayjs) => {
   const minutes = time.hour() * 60 + time.minute();
   const start = 9 * 60 + 30;
@@ -26,6 +33,29 @@ const clampToTradingLabel = (time: dayjs.Dayjs) => {
   if (minutes <= start) return '09:30';
   if (minutes >= end) return '15:00';
   return time.format('HH:mm');
+};
+
+const parseTimeToMinutes = (time: string) => {
+  const [hour, minute] = time.split(':').map(Number);
+  if (Number.isNaN(hour) || Number.isNaN(minute)) return null;
+  return hour * 60 + minute;
+};
+
+const getMarketTypeFromTimes = (times: string[]) => {
+  const minutes = times.map(parseTimeToMinutes).filter((value): value is number => value !== null);
+  const maxMinutes = minutes.length ? Math.max(...minutes) : 0;
+  return maxMinutes >= 16 * 60 ? 'HK' : 'A';
+};
+
+const getMarketTicks = (marketType: 'A' | 'HK') => (
+  marketType === 'HK' ? ['09:30', '12:00', '13:00', '16:00'] : ['09:30', '11:30', '13:00', '15:00']
+);
+
+const isTradingTime = (minutes: number, marketType: 'A' | 'HK') => {
+  if (marketType === 'HK') {
+    return (minutes >= 9 * 60 + 30 && minutes <= 12 * 60) || (minutes >= 13 * 60 && minutes <= 16 * 60);
+  }
+  return (minutes >= 9 * 60 + 30 && minutes <= 11 * 60 + 30) || (minutes >= 13 * 60 && minutes <= 15 * 60);
 };
 
 const getIntradayStorageKey = (fundCode: string, date: string) => `intraday-${fundCode}-${date}`;
@@ -96,14 +126,24 @@ const FundDetail: React.FC = () => {
         getFundDetails(code),
         getFundValuation(code)
       ]);
-      setInfo(infoData);
-      setValuation(valData);
       const now = dayjs();
+      const valuationData = valData ?? (infoData?.netWorth ? {
+        fundCode: code,
+        estimatedValue: infoData.netWorth,
+        previousValue: infoData.netWorth,
+        change: 0,
+        changePercent: 0,
+        calculationTime: now.format('YYYY-MM-DD HH:mm:ss'),
+        holdings: [],
+        totalWeight: 0
+      } : null);
+      setInfo(infoData);
+      setValuation(valuationData);
       setLastUpdated(now.format('HH:mm:ss'));
       const isNetWorthStale = Boolean(infoData?.netWorthDate && dayjs(infoData.netWorthDate).isBefore(now, 'day'));
       const shouldSkipIntradayCalc = isNetWorthStale && !isMarketOpenTime(now);
       const todayKey = getIntradayBackfillKey(code, now.format('YYYY-MM-DD'));
-      if (!shouldSkipIntradayCalc && !isMarketOpenTime(now) && intradayData.length <= 2 && valData?.estimatedValue !== undefined && !localStorage.getItem(todayKey)) {
+      if (!shouldSkipIntradayCalc && !isMarketOpenTime(now) && intradayData.length <= 2 && valuationData?.estimatedValue !== undefined && !localStorage.getItem(todayKey)) {
         try {
           const backfilled = await getFundIntradayFromHoldings(code);
           if (backfilled.length >= 30) {
@@ -114,10 +154,10 @@ const FundDetail: React.FC = () => {
           localStorage.setItem(todayKey, '1');
         }
       }
-      if (!shouldSkipIntradayCalc && valData?.estimatedValue !== undefined && isMarketOpenTime(now)) {
+      if (!shouldSkipIntradayCalc && valuationData?.estimatedValue !== undefined && isMarketOpenTime(now)) {
         setIntradayData((prev) => {
           const time = now.format('HH:mm');
-          const point = { time, value: valData.estimatedValue, changePercent: valData.changePercent };
+          const point = { time, value: valuationData.estimatedValue, changePercent: valuationData.changePercent };
           if (prev.length === 0) return [point];
           const last = prev[prev.length - 1];
           if (last.time === time) {
@@ -131,20 +171,20 @@ const FundDetail: React.FC = () => {
           saveIntradayData(code, trimmed);
           return trimmed;
         });
-      } else if (valData?.estimatedValue !== undefined && intradayData.length === 0) {
+      } else if (valuationData?.estimatedValue !== undefined && intradayData.length === 0) {
         const backfilled = await getFundIntradayFromHoldings(code);
         if (backfilled.length >= 30) {
           setIntradayData(backfilled);
           saveIntradayData(code, backfilled);
         } else {
-          const baseValue = valData.previousValue ?? infoData?.netWorth ?? valData.estimatedValue;
+          const baseValue = valuationData.previousValue ?? infoData?.netWorth ?? valuationData.estimatedValue;
           const endTime = clampToTradingLabel(now);
           const seed =
             endTime === '09:30'
               ? [{ time: '09:30', value: baseValue, changePercent: 0 }]
               : [
                   { time: '09:30', value: baseValue, changePercent: 0 },
-                  { time: endTime, value: valData.estimatedValue, changePercent: valData.changePercent }
+                  { time: endTime, value: valuationData.estimatedValue, changePercent: valuationData.changePercent }
                 ];
           setIntradayData(seed);
           saveIntradayData(code, seed);
@@ -163,9 +203,16 @@ const FundDetail: React.FC = () => {
       const stored = loadIntradayData(code);
       setIntradayData(stored);
     }
-    fetchData();
-    const timer = setInterval(() => fetchData(true), 30000);
-    return () => clearInterval(timer);
+    let timer: number | undefined;
+    const schedule = () => {
+      fetchData(true);
+      const nextDelay = isAnyMarketOpenTime(dayjs()) ? 5000 : 60000;
+      timer = window.setTimeout(schedule, nextDelay);
+    };
+    schedule();
+    return () => {
+      if (timer) window.clearTimeout(timer);
+    };
   }, [code, fetchData, loadIntradayData]);
 
   if (loading && !info) {
@@ -180,42 +227,61 @@ const FundDetail: React.FC = () => {
     return <div className="text-center py-12 text-google-text-secondary dark:text-google-text-secondary-dark">未找到基金</div>;
   }
 
-  const isUp = (valuation?.changePercent || 0) >= 0;
+  const hasEstimatedValue = Number.isFinite(valuation?.estimatedValue);
+  const estimatedValue = hasEstimatedValue ? valuation!.estimatedValue : info.netWorth;
+  const changePercent = Number.isFinite(valuation?.changePercent) ? valuation!.changePercent : 0;
+  const changeValue = Number.isFinite(valuation?.change) ? valuation!.change : 0;
+  const totalWeight = Number.isFinite(valuation?.totalWeight) ? valuation!.totalWeight : 0;
+  const holdings = valuation?.holdings || [];
+  const formatNumber = (value: number | undefined, digits: number) => (
+    Number.isFinite(value) ? value!.toFixed(digits) : '--'
+  );
+  const isUp = changePercent >= 0;
   // Google Red/Green Semantic Colors
   const ColorClass = isUp ? 'text-google-red dark:text-google-red-dark' : 'text-google-green dark:text-google-green-dark';
   const BgClass = isUp ? 'bg-google-red/10 dark:bg-google-red-dark/10' : 'bg-google-green/10 dark:bg-google-green-dark/10';
   const StrokeColor = isUp ? (document.documentElement.classList.contains('dark') ? '#F2B8B5' : '#B3261E') : (document.documentElement.classList.contains('dark') ? '#6DD58C' : '#146C2E');
+  const axisTickColor = document.documentElement.classList.contains('dark') ? '#9AA0A6' : '#5F6368';
+  const nonZeroIntradayData = intradayData.filter(point => Math.abs(point.value) > 0.000001);
+  const baseIntradayData = nonZeroIntradayData.length ? nonZeroIntradayData : intradayData;
+  const intradayMarketType = getMarketTypeFromTimes(baseIntradayData.map(point => point.time));
+  const intradayAxisTicks = getMarketTicks(intradayMarketType);
+  const filteredIntradayData = baseIntradayData.filter(point => {
+    const minutes = parseTimeToMinutes(point.time);
+    return minutes !== null && isTradingTime(minutes, intradayMarketType);
+  });
+  const chartIntradayData = filteredIntradayData.length ? filteredIntradayData : baseIntradayData;
 
   return (
     <div className="space-y-6 pb-12 max-w-6xl mx-auto">
       {/* Header Info */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 px-1 sm:px-0">
         <div>
            <div className="flex items-center gap-2">
-                <h1 className="text-2xl font-normal text-google-text dark:text-google-text-dark">{info.name}</h1>
-                <span className="text-xs bg-google-surface dark:bg-google-surface-dark px-2 py-1 rounded text-google-text-secondary dark:text-google-text-secondary-dark font-mono">
+                <h1 className="text-xl sm:text-2xl font-normal text-google-text dark:text-google-text-dark">{info.name}</h1>
+                <span className="text-[10px] sm:text-xs bg-google-surface dark:bg-google-surface-dark px-1.5 sm:px-2 py-0.5 sm:py-1 rounded text-google-text-secondary dark:text-google-text-secondary-dark font-mono">
                     {info.code}
                 </span>
            </div>
-           <p className="text-google-text-secondary dark:text-google-text-secondary-dark text-sm mt-1">
+           <p className="text-google-text-secondary dark:text-google-text-secondary-dark text-xs sm:text-sm mt-1">
              {info.type} · {info.manager || '未知'}
            </p>
         </div>
-        <div className="flex space-x-3">
+        <div className="flex space-x-2 sm:space-x-3 w-full sm:w-auto">
             {userFundInfo && (
               <button 
                   onClick={() => setIsTransactionModalOpen(true)}
-                  className="flex items-center px-6 py-2 bg-google-surface dark:bg-google-surface-dark text-google-primary dark:text-google-primary-dark rounded-full font-medium hover:bg-gray-200 dark:hover:bg-[#2C2D2E] transition-colors"
+                  className="flex-1 sm:flex-none flex items-center justify-center px-4 sm:px-6 py-2 bg-google-surface dark:bg-google-surface-dark text-google-primary dark:text-google-primary-dark rounded-full text-sm font-medium hover:bg-gray-200 dark:hover:bg-[#2C2D2E] transition-colors"
               >
-                  <ArrowRightLeft className="h-4 w-4 mr-2" />
+                  <ArrowRightLeft className="h-4 w-4 mr-1.5 sm:mr-2" />
                   交易
               </button>
             )}
             <button 
                 onClick={() => userFundInfo ? setIsTransactionModalOpen(true) : setIsAddModalOpen(true)}
-                className="flex items-center px-6 py-2 bg-google-primary dark:bg-google-primary-dark text-white dark:text-google-bg-dark rounded-full font-medium hover:shadow-md transition-shadow"
+                className="flex-1 sm:flex-none flex items-center justify-center px-4 sm:px-6 py-2 bg-google-primary dark:bg-google-primary-dark text-white dark:text-google-bg-dark rounded-full text-sm font-medium hover:shadow-md transition-shadow"
             >
-                <Plus className="h-4 w-4 mr-2" />
+                <Plus className="h-4 w-4 mr-1.5 sm:mr-2" />
                 {userFundInfo ? '已在持仓' : '添加持仓'}
             </button>
             <button 
@@ -231,36 +297,36 @@ const FundDetail: React.FC = () => {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         
         {/* Real-time Valuation Card */}
-        <div className="lg:col-span-2 bg-google-surface dark:bg-google-surface-dark rounded-[24px] p-6 flex flex-col justify-between min-h-[300px]">
+        <div className="lg:col-span-2 bg-google-surface dark:bg-google-surface-dark rounded-[24px] p-5 sm:p-6 flex flex-col justify-between min-h-[260px] sm:min-h-[300px]">
             <div>
-                <div className="flex items-center gap-2 mb-2">
-                    <Clock className="h-5 w-5 text-google-text-secondary dark:text-google-text-secondary-dark" />
-                    <span className="text-sm font-medium text-google-text-secondary dark:text-google-text-secondary-dark">实时估值</span>
-                    <span className="text-xs text-google-text-secondary dark:text-google-text-secondary-dark opacity-60">
+                <div className="flex items-center gap-2 mb-1 sm:mb-2">
+                    <Clock className="h-4 w-4 sm:h-5 sm:w-5 text-google-text-secondary dark:text-google-text-secondary-dark" />
+                    <span className="text-xs sm:text-sm font-medium text-google-text-secondary dark:text-google-text-secondary-dark">实时估值</span>
+                    <span className="text-[10px] sm:text-xs text-google-text-secondary dark:text-google-text-secondary-dark opacity-60">
                         {lastUpdated}
                     </span>
                 </div>
                 
-                <div className="flex items-baseline gap-4 mt-4">
-                    <span className={`text-6xl font-normal tracking-tighter ${ColorClass}`}>
-                        {valuation?.estimatedValue.toFixed(4)}
+                <div className="flex items-baseline gap-3 sm:gap-4 mt-2 sm:mt-4">
+                    <span className={`text-4xl sm:text-5xl md:text-6xl font-normal tracking-tighter ${ColorClass}`}>
+                        {formatNumber(estimatedValue, 4)}
                     </span>
-                    <div className={`flex items-center px-3 py-1 rounded-full ${BgClass}`}>
-                        {isUp ? <ArrowUp className={`h-4 w-4 ${ColorClass}`} /> : <ArrowDown className={`h-4 w-4 ${ColorClass}`} />}
-                        <span className={`font-medium ml-1 ${ColorClass}`}>
-                            {valuation?.changePercent.toFixed(2)}%
+                    <div className={`flex items-center px-2 sm:px-3 py-0.5 sm:py-1 rounded-full ${BgClass}`}>
+                        {isUp ? <ArrowUp className={`h-3 w-3 sm:h-4 sm:w-4 ${ColorClass}`} /> : <ArrowDown className={`h-3 w-3 sm:h-4 sm:w-4 ${ColorClass}`} />}
+                        <span className={`text-sm sm:text-base font-medium ml-1 ${ColorClass}`}>
+                            {formatNumber(changePercent, 2)}%
                         </span>
                     </div>
                 </div>
-                <div className={`mt-2 text-lg font-medium ${ColorClass}`}>
-                    {valuation?.change > 0 ? '+' : ''}{valuation?.change.toFixed(4)}
+                <div className={`mt-1 sm:mt-2 text-base sm:text-lg font-medium ${ColorClass}`}>
+                    {changeValue > 0 ? '+' : ''}{formatNumber(changeValue, 4)}
                 </div>
             </div>
 
             {/* Chart Area */}
-            <div className="h-48 mt-6 w-full">
+            <div className="h-32 sm:h-48 mt-4 sm:mt-6 w-full">
                 <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={intradayData}>
+                <AreaChart data={chartIntradayData} margin={{ left: 16, right: 16, top: 4, bottom: 0 }}>
                     <defs>
                     <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
                         <stop offset="5%" stopColor={StrokeColor} stopOpacity={0.1}/>
@@ -269,7 +335,36 @@ const FundDetail: React.FC = () => {
                     </defs>
                     <XAxis 
                         dataKey="time" 
-                        hide 
+                        ticks={intradayAxisTicks}
+                        tick={(props: any) => {
+                          const value: string = props?.payload?.value ?? '';
+                          const first = intradayAxisTicks[0];
+                          const last = intradayAxisTicks[intradayAxisTicks.length - 1];
+                          const text = typeof value === 'string' ? value.replace(/^0/, '') : String(value);
+                          const isFirst = value === first;
+                          const isLast = value === last;
+                          const textAnchor = isFirst ? 'start' : isLast ? 'end' : 'middle';
+                          const dx = isFirst ? 4 : isLast ? -4 : 0;
+                          return (
+                            <text
+                              x={props.x}
+                              y={props.y}
+                              dy={10}
+                              dx={dx}
+                              textAnchor={textAnchor}
+                              fill={axisTickColor}
+                              fontSize={10}
+                            >
+                              {text}
+                            </text>
+                          );
+                        }}
+                        tickMargin={8}
+                        padding={{ left: 6, right: 6 }}
+                        axisLine={false}
+                        tickLine={false}
+                        interval={0}
+                        minTickGap={0}
                     />
                     <YAxis 
                         domain={['auto', 'auto']} 
@@ -301,21 +396,21 @@ const FundDetail: React.FC = () => {
         </div>
 
         {/* Stats Card */}
-        <div className="space-y-6">
-            <div className="bg-google-surface dark:bg-google-surface-dark rounded-[24px] p-6 h-full">
-                <div className="flex items-center gap-2 mb-6">
-                    <Info className="h-5 w-5 text-google-text-secondary dark:text-google-text-secondary-dark" />
-                    <span className="text-sm font-medium text-google-text-secondary dark:text-google-text-secondary-dark">昨日净值</span>
+        <div className="space-y-4 sm:space-y-6">
+            <div className="bg-google-surface dark:bg-google-surface-dark rounded-[24px] p-5 sm:p-6 h-full">
+                <div className="flex items-center gap-2 mb-4 sm:mb-6">
+                    <Info className="h-4 w-4 sm:h-5 sm:w-5 text-google-text-secondary dark:text-google-text-secondary-dark" />
+                    <span className="text-xs sm:text-sm font-medium text-google-text-secondary dark:text-google-text-secondary-dark">昨日净值</span>
                 </div>
                 
-                <div className="flex flex-col gap-1">
-                    <span className="text-4xl font-normal text-google-text dark:text-google-text-dark">
+                <div className="flex flex-col gap-0.5 sm:gap-1">
+                    <span className="text-3xl sm:text-4xl font-normal text-google-text dark:text-google-text-dark">
                         {info.netWorth?.toFixed(4)}
                     </span>
-                    <span className={`text-lg font-medium ${(parseFloat(info.dayGrowth || '0') >= 0) ? 'text-google-red dark:text-google-red-dark' : 'text-google-green dark:text-google-green-dark'}`}>
+                    <span className={`text-base sm:text-lg font-medium ${(parseFloat(info.dayGrowth || '0') >= 0) ? 'text-google-red dark:text-google-red-dark' : 'text-google-green dark:text-google-green-dark'}`}>
                         {info.dayGrowth && parseFloat(info.dayGrowth) > 0 ? '+' : ''}{info.dayGrowth}%
                     </span>
-                    <span className="text-sm text-google-text-secondary dark:text-google-text-secondary-dark mt-2">
+                    <span className="text-[10px] sm:text-sm text-google-text-secondary dark:text-google-text-secondary-dark mt-1 sm:mt-2">
                         {info.netWorthDate}
                     </span>
                 </div>
@@ -332,17 +427,16 @@ const FundDetail: React.FC = () => {
                     </div>
                 </div>
                 <div className="text-xl font-medium text-google-text dark:text-google-text-dark">
-                    {valuation?.totalWeight.toFixed(2)}%
+                    {formatNumber(totalWeight, 2)}%
                 </div>
             </div> */}
         </div>
       </div>
 
-      {/* Holdings List */}
       <div className="bg-white dark:bg-transparent rounded-[24px] border border-gray-200 dark:border-gray-800 overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-800 flex items-center gap-2">
-            <BarChart3 className="h-5 w-5 text-google-text-secondary dark:text-google-text-secondary-dark" />
-            <h3 className="text-base font-medium text-google-text dark:text-google-text-dark">
+        <div className="px-4 sm:px-6 py-3 sm:py-4 border-b border-gray-100 dark:border-gray-800 flex items-center gap-2">
+            <BarChart3 className="h-4 w-4 sm:h-5 sm:w-5 text-google-text-secondary dark:text-google-text-secondary-dark" />
+            <h3 className="text-sm sm:text-base font-medium text-google-text dark:text-google-text-dark">
                 前十大重仓股表现
             </h3>
         </div>
@@ -350,25 +444,25 @@ const FundDetail: React.FC = () => {
           <table className="min-w-full">
             <thead className="bg-gray-50 dark:bg-[#1E1F20]">
               <tr>
-                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-google-text-secondary dark:text-google-text-secondary-dark uppercase tracking-wider">
+                <th scope="col" className="px-3 sm:px-6 py-3 text-left text-[10px] sm:text-xs font-medium text-google-text-secondary dark:text-google-text-secondary-dark uppercase tracking-wider">
                   股票
                 </th>
-                <th scope="col" className="px-6 py-3 text-right text-xs font-medium text-google-text-secondary dark:text-google-text-secondary-dark uppercase tracking-wider">
+                <th scope="col" className="hidden sm:table-cell px-3 sm:px-6 py-3 text-right text-[10px] sm:text-xs font-medium text-google-text-secondary dark:text-google-text-secondary-dark uppercase tracking-wider">
                   权重
                 </th>
-                <th scope="col" className="px-6 py-3 text-right text-xs font-medium text-google-text-secondary dark:text-google-text-secondary-dark uppercase tracking-wider">
+                <th scope="col" className="px-3 sm:px-6 py-3 text-right text-[10px] sm:text-xs font-medium text-google-text-secondary dark:text-google-text-secondary-dark uppercase tracking-wider">
                   现价
                 </th>
-                <th scope="col" className="px-6 py-3 text-right text-xs font-medium text-google-text-secondary dark:text-google-text-secondary-dark uppercase tracking-wider">
+                <th scope="col" className="px-3 sm:px-6 py-3 text-right text-[10px] sm:text-xs font-medium text-google-text-secondary dark:text-google-text-secondary-dark uppercase tracking-wider">
                   涨跌
                 </th>
-                <th scope="col" className="px-6 py-3 text-right text-xs font-medium text-google-text-secondary dark:text-google-text-secondary-dark uppercase tracking-wider">
+                <th scope="col" className="px-3 sm:px-6 py-3 text-right text-[10px] sm:text-xs font-medium text-google-text-secondary dark:text-google-text-secondary-dark uppercase tracking-wider">
                   贡献
                 </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 dark:divide-gray-800 bg-white dark:bg-[#131314]">
-              {valuation?.holdings.map((item) => {
+              {holdings.length > 0 ? holdings.map((item) => {
                 const stock = item.realtime;
                 const stockChange = stock?.changePercent || 0;
                 const isStockUp = stockChange >= 0;
@@ -376,19 +470,19 @@ const FundDetail: React.FC = () => {
                 
                 return (
                   <tr key={item.stock.stockCode} className="hover:bg-gray-50 dark:hover:bg-[#1E1F20] transition-colors">
-                    <td className="px-6 py-4 whitespace-nowrap">
+                    <td className="px-3 sm:px-6 py-3 sm:py-4 whitespace-nowrap">
                       <div className="flex flex-col">
-                        <span className="text-sm font-medium text-google-text dark:text-google-text-dark">{item.stock.stockName}</span>
-                        <span className="text-xs text-google-text-secondary dark:text-google-text-secondary-dark font-mono">{item.stock.stockCode}</span>
+                        <span className="text-xs sm:text-sm font-medium text-google-text dark:text-google-text-dark">{item.stock.stockName}</span>
+                        <span className="text-[10px] sm:text-xs text-google-text-secondary dark:text-google-text-secondary-dark font-mono">{item.stock.stockCode}</span>
                       </div>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm text-google-text-secondary dark:text-google-text-secondary-dark font-mono">
+                    <td className="hidden sm:table-cell px-3 sm:px-6 py-3 sm:py-4 whitespace-nowrap text-right text-xs sm:text-sm text-google-text-secondary dark:text-google-text-secondary-dark font-mono">
                       {item.stock.weight}%
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm text-google-text dark:text-google-text-dark font-mono font-medium">
-                      {stock?.currentPrice.toFixed(2) || '--'}
+                    <td className="px-3 sm:px-6 py-3 sm:py-4 whitespace-nowrap text-right text-xs sm:text-sm text-google-text dark:text-google-text-dark font-mono font-medium">
+                      {formatNumber(stock?.currentPrice, 2)}
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium font-mono">
+                    <td className="px-3 sm:px-6 py-3 sm:py-4 whitespace-nowrap text-right text-xs sm:text-sm font-medium font-mono">
                        {stock ? (
                            <span className={isStockUp ? 'text-google-red dark:text-google-red-dark' : 'text-google-green dark:text-google-green-dark'}>
                                {isStockUp ? '+' : ''}{stockChange.toFixed(2)}%
@@ -397,14 +491,20 @@ const FundDetail: React.FC = () => {
                            <span className="text-gray-400">--</span>
                        )}
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-mono font-medium">
+                    <td className="px-3 sm:px-6 py-3 sm:py-4 whitespace-nowrap text-right text-xs sm:text-sm font-mono font-medium">
                         <span className={contribution >= 0 ? 'text-google-red dark:text-google-red-dark' : 'text-google-green dark:text-google-green-dark'}>
                             {contribution > 0 ? '+' : ''}{contribution.toFixed(4)}%
                         </span>
                     </td>
                   </tr>
                 );
-              })}
+              }) : (
+                <tr>
+                  <td colSpan={5} className="px-3 sm:px-6 py-6 text-center text-xs sm:text-sm text-google-text-secondary dark:text-google-text-secondary-dark">
+                    暂无重仓股数据
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>

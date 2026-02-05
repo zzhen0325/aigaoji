@@ -12,9 +12,82 @@ import dayjs from 'dayjs';
 import { useToast } from '@/components/ToastProvider';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 
+const PORTFOLIO_CACHE_TTL = 2 * 60 * 1000;
+
+const parseTimeToMinutes = (time: string) => {
+  const [hour, minute] = time.split(':').map(Number);
+  if (Number.isNaN(hour) || Number.isNaN(minute)) return null;
+  return hour * 60 + minute;
+};
+
+const getMarketTypeFromTimes = (times: string[]) => {
+  const minutes = times.map(parseTimeToMinutes).filter((value): value is number => value !== null);
+  const maxMinutes = minutes.length ? Math.max(...minutes) : 0;
+  return maxMinutes >= 16 * 60 ? 'HK' : 'A';
+};
+
+const getMarketTicks = (marketType: 'A' | 'HK') => (
+  marketType === 'HK' ? ['09:30', '12:00', '13:00', '16:00'] : ['09:30', '11:30', '13:00', '15:00']
+);
+
+const isTradingTime = (minutes: number, marketType: 'A' | 'HK') => {
+  if (marketType === 'HK') {
+    return (minutes >= 9 * 60 + 30 && minutes <= 12 * 60) || (minutes >= 13 * 60 && minutes <= 16 * 60);
+  }
+  return (minutes >= 9 * 60 + 30 && minutes <= 11 * 60 + 30) || (minutes >= 13 * 60 && minutes <= 15 * 60);
+};
+
+const getPortfolioCacheKey = (username?: string) => `portfolio-page-cache-${username ?? 'guest'}`;
+
+const isAnyMarketOpenTime = (time: dayjs.Dayjs) => {
+  const minutes = time.hour() * 60 + time.minute();
+  const isAOpen = (minutes >= 9 * 60 + 30 && minutes <= 11 * 60 + 30) || (minutes >= 13 * 60 && minutes <= 15 * 60);
+  const isHKOpen = (minutes >= 9 * 60 + 30 && minutes <= 12 * 60) || (minutes >= 13 * 60 && minutes <= 16 * 60);
+  return isAOpen || isHKOpen;
+};
+
+const loadPortfolioPageCache = (username?: string) => {
+  try {
+    const raw = sessionStorage.getItem(getPortfolioCacheKey(username));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed?.timestamp) return null;
+    if (Date.now() - parsed.timestamp > PORTFOLIO_CACHE_TTL) return null;
+    if (!Array.isArray(parsed.portfolio)) return null;
+    return parsed;
+  } catch (e) {
+    console.error('Failed to load portfolio cache', e);
+    return null;
+  }
+};
+
+const savePortfolioPageCache = (
+  username: string | undefined,
+  data: {
+    portfolio: UserPortfolio[];
+    valuations: Record<string, FundValuation>;
+    intradayProfitData: { time: string; value: number }[];
+  }
+) => {
+  try {
+    sessionStorage.setItem(
+      getPortfolioCacheKey(username),
+      JSON.stringify({ ...data, timestamp: Date.now() })
+    );
+  } catch (e) {
+    console.error('Failed to save portfolio cache', e);
+  }
+};
+
 const Portfolio: React.FC = () => {
-  const [portfolio, setPortfolio] = useState<UserPortfolio[]>([]);
-  const [valuations, setValuations] = useState<Record<string, FundValuation>>({});
+  const navigate = useNavigate();
+  const { currentUser } = useUserStore();
+  const { showToast } = useToast();
+
+  const initialCache = loadPortfolioPageCache(currentUser?.username);
+
+  const [portfolio, setPortfolio] = useState<UserPortfolio[]>(() => initialCache?.portfolio || []);
+  const [valuations, setValuations] = useState<Record<string, FundValuation>>(() => initialCache?.valuations || {});
   const [loading, setLoading] = useState(false);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isTransactionModalOpen, setIsTransactionModalOpen] = useState(false);
@@ -24,16 +97,28 @@ const Portfolio: React.FC = () => {
   const [editingField, setEditingField] = useState<{ id: string, field: 'holdingAmount' | 'holdingProfit' } | null>(null);
   const [sortConfig, setSortConfig] = useState<{ key: string, direction: 'asc' | 'desc' | null }>({ key: '', direction: null });
   const [showValues, setShowValues] = useState(true);
-  const [intradayProfitData, setIntradayProfitData] = useState<{ time: string; value: number }[]>([]);
+  const [intradayProfitData, setIntradayProfitData] = useState<{ time: string; value: number }[]>(() => initialCache?.intradayProfitData || []);
   const [intradayLoading, setIntradayLoading] = useState(false);
-  
-  const navigate = useNavigate();
-  const { currentUser } = useUserStore();
-  const { showToast } = useToast();
 
   const getIntradayStorageKey = (fundCode: string, date: string) => `intraday-${fundCode}-${date}`;
   const getIntradayLatestKey = (fundCode: string) => `intraday-${fundCode}-latest`;
   const getPortfolioIntradayKey = (date: string) => `portfolio-intraday-profit-${date}`;
+
+  useEffect(() => {
+    const cache = loadPortfolioPageCache(currentUser?.username);
+    if (!cache) return;
+    setPortfolio(cache.portfolio);
+    setValuations(cache.valuations || {});
+    setIntradayProfitData(cache.intradayProfitData || []);
+  }, [currentUser?.username]);
+
+  useEffect(() => {
+    savePortfolioPageCache(currentUser?.username, {
+      portfolio,
+      valuations,
+      intradayProfitData
+    });
+  }, [currentUser?.username, portfolio, valuations, intradayProfitData]);
 
   const loadIntradayData = useCallback((fundCode: string) => {
     const todayKey = getIntradayStorageKey(fundCode, dayjs().format('YYYY-MM-DD'));
@@ -130,19 +215,35 @@ const Portfolio: React.FC = () => {
         })
       );
 
-      const timeMap = new Map<string, number>();
-      seriesList.forEach((series, index) => {
+      const timeSet = new Set<string>();
+      const seriesMeta = seriesList.map((series, index) => {
         const item = portfolio[index];
         const isUpToDate = item.isProfitUpToDate && item.updateDate === today;
-        if (isUpToDate) return;
+        if (isUpToDate || series.length === 0) {
+          return { holdingAmount: item.holdingAmount, points: [] as { time: string; changePercent: number }[] };
+        }
         series.forEach((point: { time: string; changePercent: number }) => {
-          const profit = item.holdingAmount * (point.changePercent / 100);
-          const existing = timeMap.get(point.time) || 0;
-          timeMap.set(point.time, existing + profit);
+          timeSet.add(point.time);
         });
+        return {
+          holdingAmount: item.holdingAmount,
+          points: series
+            .map((point: { time: string; changePercent: number }) => ({
+              time: point.time,
+              changePercent: point.changePercent
+            }))
+            .sort((a, b) => {
+              const aMinutes = parseTimeToMinutes(a.time) ?? 0;
+              const bMinutes = parseTimeToMinutes(b.time) ?? 0;
+              return aMinutes - bMinutes;
+            })
+        };
       });
-
-      const times = Array.from(timeMap.keys()).sort();
+      const times = Array.from(timeSet).sort((a, b) => {
+        const aMinutes = parseTimeToMinutes(a) ?? 0;
+        const bMinutes = parseTimeToMinutes(b) ?? 0;
+        return aMinutes - bMinutes;
+      });
       if (times.length === 0) {
         if (manualTotal !== 0) {
           const data = [
@@ -157,10 +258,38 @@ const Portfolio: React.FC = () => {
         return;
       }
 
-      const data = times.map((time) => ({
-        time,
-        value: (timeMap.get(time) || 0) + manualTotal
-      }));
+      const pointers = seriesMeta.map(() => 0);
+      const lastChangePercents = seriesMeta.map(() => null as number | null);
+      const data = times.map((time) => {
+        const currentMinutes = parseTimeToMinutes(time) ?? 0;
+        let totalValue = manualTotal;
+        seriesMeta.forEach((meta, index) => {
+          const points = meta.points;
+          let pointer = pointers[index];
+          while (pointer < points.length) {
+            const pointMinutes = parseTimeToMinutes(points[pointer].time) ?? 0;
+            if (pointMinutes > currentMinutes) break;
+            lastChangePercents[index] = points[pointer].changePercent;
+            pointer += 1;
+          }
+          pointers[index] = pointer;
+          const latestChangePercent = lastChangePercents[index];
+          if (latestChangePercent !== null) {
+            totalValue += meta.holdingAmount * (latestChangePercent / 100);
+          }
+        });
+        return { time, value: totalValue };
+      });
+
+      const latestTime = times[times.length - 1];
+      const latestTimeMinutes = parseTimeToMinutes(latestTime) ?? 0;
+      const nowLabel = dayjs().format('HH:mm');
+      const nowMinutes = parseTimeToMinutes(nowLabel) ?? latestTimeMinutes;
+      if (nowMinutes > latestTimeMinutes) {
+        data.push({ time: nowLabel, value: totalDayProfitCurrent });
+      } else if (nowMinutes === latestTimeMinutes && data.length > 0) {
+        data[data.length - 1] = { time: latestTime, value: totalDayProfitCurrent };
+      }
       setIntradayProfitData(data);
       savePortfolioIntradayCache(data);
     } finally {
@@ -286,9 +415,16 @@ const Portfolio: React.FC = () => {
 
   useEffect(() => {
     if (portfolio.length > 0) {
-      fetchValuations();
-      const timer = setInterval(fetchValuations, 60000);
-      return () => clearInterval(timer);
+      let timer: number | undefined;
+      const schedule = () => {
+        fetchValuations();
+        const nextDelay = isAnyMarketOpenTime(dayjs()) ? 5000 : 60000;
+        timer = window.setTimeout(schedule, nextDelay);
+      };
+      schedule();
+      return () => {
+        if (timer) window.clearTimeout(timer);
+      };
     }
   }, [portfolio.length, fetchValuations]);
 
@@ -298,11 +434,16 @@ const Portfolio: React.FC = () => {
       if (cached.length > 0) {
         setIntradayProfitData(cached);
       }
-      void loadPortfolioIntraday();
-      const timer = setInterval(() => {
+      let timer: number | undefined;
+      const schedule = () => {
         void loadPortfolioIntraday();
-      }, 300000);
-      return () => clearInterval(timer);
+        const nextDelay = isAnyMarketOpenTime(dayjs()) ? 5000 : 60000;
+        timer = window.setTimeout(schedule, nextDelay);
+      };
+      schedule();
+      return () => {
+        if (timer) window.clearTimeout(timer);
+      };
     }
     setIntradayProfitData([]);
   }, [portfolio.length, loadPortfolioIntraday, loadPortfolioIntradayCache]);
@@ -499,33 +640,50 @@ const Portfolio: React.FC = () => {
   const strokeColor = isTotalUp
     ? (document.documentElement.classList.contains('dark') ? '#F2B8B5' : '#B3261E')
     : (document.documentElement.classList.contains('dark') ? '#6DD58C' : '#146C2E');
+  const axisTickColor = document.documentElement.classList.contains('dark') ? '#9AA0A6' : '#5F6368';
+  const totalAssetBase = totalAsset - totalDayProfit;
+  const totalDayProfitPercent = totalAssetBase !== 0 ? (totalDayProfit / totalAssetBase) * 100 : 0;
+  const totalAssetBaseForHolding = totalAsset - totalRealtimeProfit;
+  const totalRealtimeProfitPercent = totalAssetBaseForHolding !== 0 ? (totalRealtimeProfit / totalAssetBaseForHolding) * 100 : 0;
+  const formatPercent = (value: number) => `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`;
+  const dayProfitPercentLabel = showValues ? formatPercent(totalDayProfitPercent) : '****';
+  const realtimeProfitPercentLabel = showValues ? formatPercent(totalRealtimeProfitPercent) : '****';
+  const nonZeroIntradayProfitData = intradayProfitData.filter(point => Math.abs(point.value) > 0.000001);
+  const baseIntradayProfitData = nonZeroIntradayProfitData.length ? nonZeroIntradayProfitData : intradayProfitData;
+  const intradayMarketType = getMarketTypeFromTimes(baseIntradayProfitData.map(point => point.time));
+  const intradayAxisTicks = getMarketTicks(intradayMarketType);
+  const filteredIntradayProfitData = baseIntradayProfitData.filter(point => {
+    const minutes = parseTimeToMinutes(point.time);
+    return minutes !== null && isTradingTime(minutes, intradayMarketType);
+  });
+  const chartIntradayProfitData = filteredIntradayProfitData.length ? filteredIntradayProfitData : baseIntradayProfitData;
   
   return (
     <div className="space-y-8 max-w-6xl mx-auto pb-12">
-      <div className="flex flex-col md:flex-row justify-between items-end gap-4">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4 px-1 sm:px-0">
         <div>
-            <h1 className="text-4xl font-normal text-google-text dark:text-google-text-dark tracking-tight">自选持仓</h1>
-            <p className="text-google-text-secondary dark:text-google-text-secondary-dark mt-2 text-lg">
+            <h1 className="text-3xl sm:text-4xl font-normal text-google-text dark:text-google-text-dark tracking-tight">自选持仓</h1>
+            <p className="text-google-text-secondary dark:text-google-text-secondary-dark mt-1 text-base sm:text-lg">
                 您的投资概览 {currentUser && `(${currentUser.username})`}
             </p>
         </div>
-        <div className="flex space-x-3">
+        <div className="flex space-x-2 sm:space-x-3 w-full sm:w-auto">
             <button
                 onClick={() => setIsAddModalOpen(true)}
-                className="flex items-center px-5 py-2.5 bg-google-surface dark:bg-google-surface-dark text-google-text dark:text-google-text-dark rounded-full text-sm font-medium hover:bg-gray-200 dark:hover:bg-[#2C2D2E] transition-colors"
+                className="flex-1 sm:flex-none flex items-center justify-center px-4 sm:px-5 py-2 sm:py-2.5 bg-google-surface dark:bg-google-surface-dark text-google-text dark:text-google-text-dark rounded-full text-sm font-medium hover:bg-gray-200 dark:hover:bg-[#2C2D2E] transition-colors"
             >
-                <Plus className="h-4 w-4 mr-2" /> 添加基金
+                <Plus className="h-4 w-4 mr-1.5 sm:mr-2" /> 添加基金
             </button>
             <button 
                 onClick={() => setShowValues(!showValues)}
-                className="p-2.5 bg-google-surface dark:bg-google-surface-dark text-google-text-secondary dark:text-google-text-secondary-dark rounded-full hover:bg-gray-200 dark:hover:bg-[#2C2D2E] transition-colors"
+                className="p-2 sm:p-2.5 bg-google-surface dark:bg-google-surface-dark text-google-text-secondary dark:text-google-text-secondary-dark rounded-full hover:bg-gray-200 dark:hover:bg-[#2C2D2E] transition-colors"
                 title={showValues ? "隐藏金额" : "显示金额"}
             >
                 {showValues ? <Eye className="h-5 w-5" /> : <EyeOff className="h-5 w-5" />}
             </button>
             <button 
                 onClick={fetchValuations}
-                className={`p-2.5 bg-google-surface dark:bg-google-surface-dark text-google-text-secondary dark:text-google-text-secondary-dark rounded-full hover:bg-gray-200 dark:hover:bg-[#2C2D2E] transition-colors ${loading ? 'animate-spin' : ''}`}
+                className={`p-2 sm:p-2.5 bg-google-surface dark:bg-google-surface-dark text-google-text-secondary dark:text-google-text-secondary-dark rounded-full hover:bg-gray-200 dark:hover:bg-[#2C2D2E] transition-colors ${loading ? 'animate-spin' : ''}`}
             >
                 <RefreshCw className="h-5 w-5" />
             </button>
@@ -548,71 +706,113 @@ const Portfolio: React.FC = () => {
       ) : (
         <div className="space-y-8">
            {/* Dashboard Cards */}
-           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <div className="bg-google-surface dark:bg-google-surface-dark p-8 rounded-[24px] col-span-1 md:col-span-3 lg:col-span-1 relative overflow-hidden group">
+           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-6">
+                <div className="bg-google-surface dark:bg-google-surface-dark p-5 sm:p-8 rounded-[24px] col-span-1 md:col-span-3 lg:col-span-1 relative overflow-hidden group">
                     <div className="relative z-10">
-                        <div className="text-google-text-secondary dark:text-google-text-secondary-dark font-medium mb-2">总资产</div>
-                        <div className="text-5xl font-normal text-google-text dark:text-google-text-dark tracking-tight">
+                        <div className="text-google-text-secondary dark:text-google-text-secondary-dark font-medium mb-1 sm:mb-2 text-sm sm:text-base">总资产</div>
+                        <div className="text-3xl sm:text-4xl md:text-5xl font-normal text-google-text dark:text-google-text-dark tracking-tight">
                             {showValues ? `¥${totalAsset.toFixed(2)}` : '****'}
                         </div>
                     </div>
                     <div className="absolute right-0 bottom-0 opacity-5 dark:opacity-5 transform translate-x-1/4 translate-y-1/4">
-                        <Wallet className="h-64 w-64 text-google-primary dark:text-google-primary-dark" />
+                        <Wallet className="h-48 w-48 sm:h-64 sm:w-64 text-google-primary dark:text-google-primary-dark" />
                     </div>
                 </div>
 
-                <div className="bg-google-surface dark:bg-google-surface-dark p-8 rounded-[24px] flex flex-col justify-between">
-                     <div className="text-google-text-secondary dark:text-google-text-secondary-dark font-medium mb-1">预估当日盈亏</div>
-                     <div className="flex items-center justify-between">
-                        <div className={`text-3xl font-normal ${totalDayProfit >= 0 ? 'text-google-red dark:text-google-red-dark' : 'text-google-green dark:text-google-green-dark'}`}>
-                            {showValues ? `${totalDayProfit > 0 ? '+' : ''}${totalDayProfit.toFixed(2)}` : '****'}
+                <div className="bg-google-surface dark:bg-google-surface-dark p-5 sm:p-8 rounded-[24px] flex flex-col justify-between">
+                     <div className="text-google-text-secondary dark:text-google-text-secondary-dark font-medium mb-1 text-sm sm:text-base">预估当日盈亏</div>
+                     <div className="flex items-center justify-between mt-2">
+                        <div className="flex items-center gap-2">
+                          <div className={`text-2xl sm:text-3xl font-normal ${totalDayProfit >= 0 ? 'text-google-red dark:text-google-red-dark' : 'text-google-green dark:text-google-green-dark'}`}>
+                              {showValues ? `${totalDayProfit > 0 ? '+' : ''}${totalDayProfit.toFixed(2)}` : '****'}
+                          </div>
+                          <span className={`text-[10px] sm:text-xs px-2 py-0.5 rounded-full ${totalDayProfit >= 0 ? 'bg-google-red/10 dark:bg-google-red-dark/10 text-google-red dark:text-google-red-dark' : 'bg-google-green/10 dark:bg-google-green-dark/10 text-google-green dark:text-google-green-dark'}`}>
+                            {dayProfitPercentLabel}
+                          </span>
                         </div>
                         {totalDayProfit >= 0 ? (
-                            <ArrowUpRight className="h-8 w-8 text-google-red dark:text-google-red-dark opacity-50" />
+                            <ArrowUpRight className="h-6 w-6 sm:h-8 sm:w-8 text-google-red dark:text-google-red-dark opacity-50" />
                         ) : (
-                            <ArrowDownRight className="h-8 w-8 text-google-green dark:text-google-green-dark opacity-50" />
+                            <ArrowDownRight className="h-6 w-6 sm:h-8 sm:w-8 text-google-green dark:text-google-green-dark opacity-50" />
                         )}
                      </div>
                 </div>
 
-                <div className="bg-google-surface dark:bg-google-surface-dark p-8 rounded-[24px] flex flex-col justify-between">
-                     <div className="text-google-text-secondary dark:text-google-text-secondary-dark font-medium mb-1">预估持有盈亏</div>
-                     <div className="flex items-center justify-between">
-                        <div className={`text-3xl font-normal ${totalRealtimeProfit >= 0 ? 'text-google-red dark:text-google-red-dark' : 'text-google-green dark:text-google-green-dark'}`}>
-                            {showValues ? `${totalRealtimeProfit > 0 ? '+' : ''}${totalRealtimeProfit.toFixed(2)}` : '****'}
+                <div className="bg-google-surface dark:bg-google-surface-dark p-5 sm:p-8 rounded-[24px] flex flex-col justify-between">
+                     <div className="text-google-text-secondary dark:text-google-text-secondary-dark font-medium mb-1 text-sm sm:text-base">预估持有盈亏</div>
+                     <div className="flex items-center justify-between mt-2">
+                        <div className="flex items-center gap-2">
+                          <div className={`text-2xl sm:text-3xl font-normal ${totalRealtimeProfit >= 0 ? 'text-google-red dark:text-google-red-dark' : 'text-google-green dark:text-google-green-dark'}`}>
+                              {showValues ? `${totalRealtimeProfit > 0 ? '+' : ''}${totalRealtimeProfit.toFixed(2)}` : '****'}
+                          </div>
+                          <span className={`text-[10px] sm:text-xs px-2 py-0.5 rounded-full ${totalRealtimeProfit >= 0 ? 'bg-google-red/10 dark:bg-google-red-dark/10 text-google-red dark:text-google-red-dark' : 'bg-google-green/10 dark:bg-google-green-dark/10 text-google-green dark:text-google-green-dark'}`}>
+                            {realtimeProfitPercentLabel}
+                          </span>
                         </div>
                          {totalRealtimeProfit >= 0 ? (
-                            <ArrowUpRight className="h-8 w-8 text-google-red dark:text-google-red-dark opacity-50" />
+                            <ArrowUpRight className="h-6 w-6 sm:h-8 sm:w-8 text-google-red dark:text-google-red-dark opacity-50" />
                         ) : (
-                            <ArrowDownRight className="h-8 w-8 text-google-green dark:text-google-green-dark opacity-50" />
+                            <ArrowDownRight className="h-6 w-6 sm:h-8 sm:w-8 text-google-green dark:text-google-green-dark opacity-50" />
                         )}
                      </div>
                 </div>
            </div>
 
-          <div className="bg-google-surface dark:bg-google-surface-dark rounded-[24px] p-6">
+          <div className="bg-google-surface dark:bg-google-surface-dark rounded-[24px] p-5 sm:p-6">
             <div className="flex items-center justify-between">
               <div>
-                <div className="text-google-text-secondary dark:text-google-text-secondary-dark font-medium mb-1">当日盈亏分时</div>
-                <div className={`text-2xl font-normal ${isTotalUp ? 'text-google-red dark:text-google-red-dark' : 'text-google-green dark:text-google-green-dark'}`}>
+                <div className="text-google-text-secondary dark:text-google-text-secondary-dark font-medium mb-1 text-sm sm:text-base">当日盈亏分时</div>
+                <div className={`text-xl sm:text-2xl font-normal ${isTotalUp ? 'text-google-red dark:text-google-red-dark' : 'text-google-green dark:text-google-green-dark'}`}>
                   {showValues ? `${totalDayProfit > 0 ? '+' : ''}${totalDayProfit.toFixed(2)}` : '****'}
                 </div>
               </div>
-              <div className="text-xs text-google-text-secondary dark:text-google-text-secondary-dark">
-                {intradayLoading ? '更新中' : (intradayProfitData.length ? `${intradayProfitData.length} 点` : '无分时数据')}
+              <div className={`text-[10px] sm:text-xs ${isTotalUp ? 'text-google-red dark:text-google-red-dark' : 'text-google-green dark:text-google-green-dark'}`}>
+                {intradayLoading ? '更新中' : dayProfitPercentLabel}
               </div>
             </div>
-            <div className="h-40 mt-4 w-full">
-              {intradayProfitData.length > 0 ? (
+            <div className="h-32 sm:h-40 mt-4 w-full">
+              {chartIntradayProfitData.length > 0 ? (
                 <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={intradayProfitData}>
+                  <AreaChart data={chartIntradayProfitData} margin={{ left: 16, right: 16, top: 4, bottom: 0 }}>
                     <defs>
                       <linearGradient id="colorDayProfit" x1="0" y1="0" x2="0" y2="1">
                         <stop offset="5%" stopColor={strokeColor} stopOpacity={0.12} />
                         <stop offset="95%" stopColor={strokeColor} stopOpacity={0} />
                       </linearGradient>
                     </defs>
-                    <XAxis dataKey="time" hide />
+                    <XAxis
+                      dataKey="time"
+                      ticks={intradayAxisTicks}
+                      tick={(props: any) => {
+                        const value: string = props?.payload?.value ?? '';
+                        const first = intradayAxisTicks[0];
+                        const last = intradayAxisTicks[intradayAxisTicks.length - 1];
+                        const text = typeof value === 'string' ? value.replace(/^0/, '') : String(value);
+                        const isFirst = value === first;
+                        const isLast = value === last;
+                        const textAnchor = isFirst ? 'start' : isLast ? 'end' : 'middle';
+                        const dx = isFirst ? 4 : isLast ? -4 : 0;
+                        return (
+                          <text
+                            x={props.x}
+                            y={props.y}
+                            dy={10}
+                            dx={dx}
+                            textAnchor={textAnchor}
+                            fill={axisTickColor}
+                            fontSize={10}
+                          >
+                            {text}
+                          </text>
+                        );
+                      }}
+                      tickMargin={8}
+                      padding={{ left: 6, right: 6 }}
+                      axisLine={false}
+                      tickLine={false}
+                      interval={0}
+                      minTickGap={0}
+                    />
                     <YAxis domain={['auto', 'auto']} hide />
                     <Tooltip
                       contentStyle={{
@@ -650,7 +850,7 @@ const Portfolio: React.FC = () => {
                 <thead className="bg-gray-50 dark:bg-[#1E1F20]">
                   <tr>
                     <th 
-                      className="px-6 py-4 text-left text-xs font-medium text-google-text-secondary dark:text-google-text-secondary-dark uppercase tracking-wider cursor-pointer group"
+                      className="px-3 sm:px-6 py-4 text-left text-[10px] sm:text-xs font-medium text-google-text-secondary dark:text-google-text-secondary-dark uppercase tracking-wider cursor-pointer group"
                       onClick={() => requestSort('fundName')}
                     >
                       <div className="flex items-center">
@@ -659,7 +859,7 @@ const Portfolio: React.FC = () => {
                       </div>
                     </th>
                     <th 
-                      className="px-6 py-4 text-right text-xs font-medium text-google-text-secondary dark:text-google-text-secondary-dark uppercase tracking-wider cursor-pointer group"
+                      className="px-3 sm:px-6 py-4 text-right text-[10px] sm:text-xs font-medium text-google-text-secondary dark:text-google-text-secondary-dark uppercase tracking-wider cursor-pointer group"
                       onClick={() => requestSort('changePercent')}
                     >
                       <div className="flex items-center justify-end">
@@ -668,7 +868,7 @@ const Portfolio: React.FC = () => {
                       </div>
                     </th>
                     <th 
-                      className="px-6 py-4 text-right text-xs font-medium text-google-text-secondary dark:text-google-text-secondary-dark uppercase tracking-wider cursor-pointer group"
+                      className="px-3 sm:px-6 py-4 text-right text-[10px] sm:text-xs font-medium text-google-text-secondary dark:text-google-text-secondary-dark uppercase tracking-wider cursor-pointer group"
                       onClick={() => requestSort('dayProfit')}
                     >
                       <div className="flex items-center justify-end">
@@ -677,7 +877,7 @@ const Portfolio: React.FC = () => {
                       </div>
                     </th>
                     <th 
-                      className="px-6 py-4 text-right text-xs font-medium text-google-text-secondary dark:text-google-text-secondary-dark uppercase tracking-wider cursor-pointer group"
+                      className="hidden md:table-cell px-3 sm:px-6 py-4 text-right text-[10px] sm:text-xs font-medium text-google-text-secondary dark:text-google-text-secondary-dark uppercase tracking-wider cursor-pointer group"
                       onClick={() => requestSort('holdingAmount')}
                     >
                       <div className="flex items-center justify-end">
@@ -686,7 +886,7 @@ const Portfolio: React.FC = () => {
                       </div>
                     </th>
                     <th 
-                      className="px-6 py-4 text-right text-xs font-medium text-google-text-secondary dark:text-google-text-secondary-dark uppercase tracking-wider cursor-pointer group"
+                      className="px-3 sm:px-6 py-4 text-right text-[10px] sm:text-xs font-medium text-google-text-secondary dark:text-google-text-secondary-dark uppercase tracking-wider cursor-pointer group"
                       onClick={() => requestSort('holdingProfit')}
                     >
                       <div className="flex items-center justify-end">
@@ -694,7 +894,7 @@ const Portfolio: React.FC = () => {
                         {renderSortIcon('holdingProfit')}
                       </div>
                     </th>
-                    <th className="px-6 py-4 text-center text-xs font-medium text-google-text-secondary dark:text-google-text-secondary-dark uppercase tracking-wider">操作</th>
+                    <th className="px-3 sm:px-6 py-4 text-center text-[10px] sm:text-xs font-medium text-google-text-secondary dark:text-google-text-secondary-dark uppercase tracking-wider">操作</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 dark:divide-gray-800 bg-white dark:bg-[#131314]">
@@ -709,13 +909,13 @@ const Portfolio: React.FC = () => {
                     
                     return (
                       <tr key={item.id} className="hover:bg-gray-50 dark:hover:bg-[#1E1F20] transition-colors group">
-                        <td className="px-6 py-4 whitespace-nowrap">
+                        <td className="px-3 sm:px-6 py-4 whitespace-nowrap">
                             <div className="flex flex-col cursor-pointer" onClick={() => navigate(`/fund/${item.fundCode}`)}>
-                                <span className="text-base font-medium text-google-text dark:text-google-text-dark group-hover:text-google-primary dark:group-hover:text-google-primary-dark transition-colors">{item.fundName}</span>
-                                <span className="text-xs text-google-text-secondary dark:text-google-text-secondary-dark font-mono mt-0.5">{item.fundCode}</span>
+                                <span className="text-sm sm:text-base font-medium text-google-text dark:text-google-text-dark group-hover:text-google-primary dark:group-hover:text-google-primary-dark transition-colors">{item.fundName}</span>
+                                <span className="text-[10px] sm:text-xs text-google-text-secondary dark:text-google-text-secondary-dark font-mono mt-0.5">{item.fundCode}</span>
                             </div>
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium font-mono">
+                        <td className="px-3 sm:px-6 py-4 whitespace-nowrap text-right text-xs sm:text-sm font-medium font-mono">
                             <div className="flex justify-end">
                                 {valuation ? (
                                     <span className={isUp ? 'text-google-red dark:text-google-red-dark' : 'text-google-green dark:text-google-green-dark'}>
@@ -726,14 +926,14 @@ const Portfolio: React.FC = () => {
                                 )}
                             </div>
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium font-mono">
+                        <td className="px-3 sm:px-6 py-4 whitespace-nowrap text-right text-xs sm:text-sm font-medium font-mono">
                             <div className="flex justify-end">
                                 <span className={dayProfit >= 0 ? 'text-google-red dark:text-google-red-dark' : 'text-google-green dark:text-google-green-dark'}>
                                     {dayProfit > 0 ? '+' : ''}{dayProfit.toFixed(2)}
                                 </span>
                             </div>
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-right">
+                        <td className="hidden md:table-cell px-3 sm:px-6 py-4 whitespace-nowrap text-right">
                             <div className="flex justify-end items-center group/cell min-h-[32px]">
                                 {editingField?.id === item.id && editingField?.field === 'holdingAmount' ? (
                                     <input 
@@ -762,7 +962,7 @@ const Portfolio: React.FC = () => {
                                 )}
                             </div>
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-right">
+                        <td className="px-3 sm:px-6 py-4 whitespace-nowrap text-right">
                             <div className="flex justify-end items-center group/cell min-h-[32px]">
                                 {editingField?.id === item.id && editingField?.field === 'holdingProfit' ? (
                                     <input 
@@ -781,7 +981,7 @@ const Portfolio: React.FC = () => {
                                         className="relative flex items-center cursor-pointer"
                                         onClick={() => setEditingField({ id: item.id, field: 'holdingProfit' })}
                                     >
-                                        <span className={`text-sm font-mono ${item.holdingProfit >= 0 ? 'text-google-red dark:text-google-red-dark' : 'text-google-green dark:text-google-green-dark'}`}>
+                                        <span className={`text-xs sm:text-sm font-mono ${item.holdingProfit >= 0 ? 'text-google-red dark:text-google-red-dark' : 'text-google-green dark:text-google-green-dark'}`}>
                                             {item.holdingProfit > 0 ? '+' : ''}{item.holdingProfit.toFixed(2)}
                                         </span>
                                         <div className="absolute left-full ml-1.5 flex items-center">
@@ -791,21 +991,21 @@ const Portfolio: React.FC = () => {
                                 )}
                             </div>
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-center">
-                            <div className="flex items-center justify-center space-x-1">
+                        <td className="px-3 sm:px-6 py-4 whitespace-nowrap text-center">
+                            <div className="flex items-center justify-center space-x-0.5 sm:space-x-1">
                                 <button 
                                     onClick={() => {
                                         setSelectedFundForTrade(item);
                                         setIsTransactionModalOpen(true);
                                     }}
-                                    className="text-google-primary dark:text-google-primary-dark hover:bg-google-primary/10 transition-colors p-2 rounded-full"
+                                    className="text-google-primary dark:text-google-primary-dark hover:bg-google-primary/10 transition-colors p-1.5 sm:p-2 rounded-full"
                                     title="加减仓"
                                 >
                                     <ArrowRightLeft className="h-4 w-4" />
                                 </button>
                                 <button 
                                     onClick={() => openDeleteModal(item)}
-                                    className="text-google-text-secondary dark:text-google-text-secondary-dark hover:text-google-red dark:hover:text-google-red-dark transition-colors p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800"
+                                    className="text-google-text-secondary dark:text-google-text-secondary-dark hover:text-google-red dark:hover:text-google-red-dark transition-colors p-1.5 sm:p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800"
                                     title="删除"
                                 >
                                     <Trash2 className="h-4 w-4" />
