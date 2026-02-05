@@ -143,6 +143,7 @@ const FundDetail: React.FC = () => {
       const isNetWorthStale = Boolean(infoData?.netWorthDate && dayjs(infoData.netWorthDate).isBefore(now, 'day'));
       const shouldSkipIntradayCalc = isNetWorthStale && !isMarketOpenTime(now);
       const todayKey = getIntradayBackfillKey(code, now.format('YYYY-MM-DD'));
+      const backfillTriggered = Boolean(localStorage.getItem(todayKey));
       if (!shouldSkipIntradayCalc && !isMarketOpenTime(now) && intradayData.length <= 2 && valuationData?.estimatedValue !== undefined && !localStorage.getItem(todayKey)) {
         try {
           const backfilled = await getFundIntradayFromHoldings(code);
@@ -171,7 +172,7 @@ const FundDetail: React.FC = () => {
           saveIntradayData(code, trimmed);
           return trimmed;
         });
-      } else if (valuationData?.estimatedValue !== undefined && intradayData.length === 0) {
+      } else if (valuationData?.estimatedValue !== undefined && intradayData.length === 0 && !backfillTriggered) {
         const backfilled = await getFundIntradayFromHoldings(code);
         if (backfilled.length >= 30) {
           setIntradayData(backfilled);
@@ -189,6 +190,7 @@ const FundDetail: React.FC = () => {
           setIntradayData(seed);
           saveIntradayData(code, seed);
         }
+        localStorage.setItem(todayKey, '1');
       }
     } catch (e) {
       console.error(e);

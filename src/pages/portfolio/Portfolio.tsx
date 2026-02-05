@@ -13,6 +13,23 @@ import { useToast } from '@/components/ToastProvider';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 
 const PORTFOLIO_CACHE_TTL = 2 * 60 * 1000;
+const FUND_VALUATION_CONCURRENCY = 4;
+const INTRADAY_BACKFILL_CONCURRENCY = 2;
+
+const runWithConcurrency = async <T, R>(items: T[], limit: number, task: (item: T) => Promise<R>) => {
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(limit, items.length);
+  const workers = new Array(workerCount).fill(null).map(async () => {
+    while (nextIndex < items.length) {
+      const current = nextIndex;
+      nextIndex += 1;
+      results[current] = await task(items[current]);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+};
 
 const parseTimeToMinutes = (time: string) => {
   const [hour, minute] = time.split(':').map(Number);
@@ -102,6 +119,7 @@ const Portfolio: React.FC = () => {
 
   const getIntradayStorageKey = (fundCode: string, date: string) => `intraday-${fundCode}-${date}`;
   const getIntradayLatestKey = (fundCode: string) => `intraday-${fundCode}-latest`;
+  const getIntradayBackfillKey = (fundCode: string, date: string) => `intraday-${fundCode}-${date}-backfilled`;
   const getPortfolioIntradayKey = (date: string) => `portfolio-intraday-profit-${date}`;
 
   useEffect(() => {
@@ -177,9 +195,16 @@ const Portfolio: React.FC = () => {
       setIntradayProfitData([]);
       return;
     }
+    const now = dayjs();
+    const marketOpen = isAnyMarketOpenTime(now);
+    const cachedPortfolioIntraday = loadPortfolioIntradayCache();
+    if (!marketOpen && cachedPortfolioIntraday.length > 0) {
+      setIntradayProfitData(cachedPortfolioIntraday);
+      return;
+    }
     setIntradayLoading(true);
     try {
-      const today = dayjs().format('YYYY-MM-DD');
+      const today = now.format('YYYY-MM-DD');
       const manualTotal = portfolio.reduce((sum, item) => {
         const isUpToDate = item.isProfitUpToDate && item.updateDate === today;
         if (!isUpToDate) return sum;
@@ -200,19 +225,30 @@ const Portfolio: React.FC = () => {
         return;
       }
 
-      const seriesList = await Promise.all(
-        portfolio.map(async (item) => {
+      const seriesList = await runWithConcurrency(
+        portfolio,
+        INTRADAY_BACKFILL_CONCURRENCY,
+        async (item) => {
           const isUpToDate = item.isProfitUpToDate && item.updateDate === today;
           if (isUpToDate) return [];
           const cached = loadIntradayData(item.fundCode);
           if (cached.length > 0) return cached;
-          const fetched = await getFundIntradayFromHoldings(item.fundCode);
-          if (fetched.length > 0) {
-            saveIntradayData(item.fundCode, fetched);
-            return fetched;
+          const backfillKey = getIntradayBackfillKey(item.fundCode, today);
+          const shouldSkipBackfill = !marketOpen && Boolean(localStorage.getItem(backfillKey));
+          if (shouldSkipBackfill) return [];
+          try {
+            const fetched = await getFundIntradayFromHoldings(item.fundCode);
+            if (fetched.length > 0) {
+              saveIntradayData(item.fundCode, fetched);
+              return fetched;
+            }
+            return [];
+          } finally {
+            if (!marketOpen) {
+              localStorage.setItem(backfillKey, '1');
+            }
           }
-          return [];
-        })
+        }
       );
 
       const timeSet = new Set<string>();
@@ -295,7 +331,7 @@ const Portfolio: React.FC = () => {
     } finally {
       setIntradayLoading(false);
     }
-  }, [portfolio, valuations, loadIntradayData, saveIntradayData, savePortfolioIntradayCache, clearPortfolioIntradayCache]);
+  }, [portfolio, valuations, loadIntradayData, saveIntradayData, savePortfolioIntradayCache, clearPortfolioIntradayCache, loadPortfolioIntradayCache]);
 
   const loadData = useCallback(async () => {
     if (currentUser) {
@@ -396,8 +432,11 @@ const Portfolio: React.FC = () => {
     if (portfolio.length === 0) return;
     setLoading(true);
     try {
-      const promises = portfolio.map(item => getFundValuation(item.fundCode));
-      const results = await Promise.all(promises);
+      const results = await runWithConcurrency(
+        portfolio,
+        FUND_VALUATION_CONCURRENCY,
+        (item) => getFundValuation(item.fundCode)
+      );
       
       const newValuations: Record<string, FundValuation> = {};
       results.forEach(res => {

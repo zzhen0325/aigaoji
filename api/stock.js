@@ -10,6 +10,7 @@ export default async function handler(req, res) {
       }
     });
     const data = await response.arrayBuffer();
+    res.setHeader('Cache-Control', 's-maxage=5, stale-while-revalidate=5');
     // Sina API often uses GBK encoding, but we'll send it as is for now
     res.status(response.status).send(Buffer.from(data));
   } catch (error) {

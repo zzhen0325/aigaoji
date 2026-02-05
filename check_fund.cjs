@@ -1,12 +1,17 @@
 const axios = require('axios');
 
+const headers = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Referer': 'https://fund.eastmoney.com/'
+};
+
 async function checkFund(code) {
   try {
     console.log(`Checking fund: ${code}`);
     // Mock the API call structure based on proxy
     // Direct call to Eastmoney API
     const url = `https://fundmobapi.eastmoney.com/FundMNewApi/FundMNInverstPosition?FCODE=${code}&PLATFORM=12&DEVICEID=1`;
-    const response = await axios.get(url);
+    const response = await axios.get(url, { headers });
     const data = response.data;
     
     if (data && data.Datas) {
