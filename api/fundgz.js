@@ -32,16 +32,24 @@ export default async function handler(req, res) {
   console.log(`[Proxy] ${url} -> ${targetUrl}`);
 
   try {
+    console.log(`[Proxy Request] Target: ${targetUrl}`);
     const response = await axios.get(targetUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Referer': 'https://fundgz.1234567.com.cn/',
         'Accept': '*/*',
         'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+        'Connection': 'keep-alive'
       },
-      timeout: 10000,
+      timeout: 15000, // Increase timeout for overseas connection
       validateStatus: () => true
     });
+
+    console.log(`[Proxy Response] Status: ${response.status}, Type: ${response.headers['content-type']}`);
+
+    if (response.status === 403 || response.status === 405) {
+      console.error(`[Proxy Blocked] IP might be blocked by Eastmoney. Status: ${response.status}`);
+    }
 
     const contentType = response.headers['content-type'];
     if (contentType) {

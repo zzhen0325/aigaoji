@@ -25,11 +25,18 @@ export default async function handler(req, res) {
     const response = await axios.get(targetUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.3 Mobile/15E148 Safari/604.1',
-        'Referer': 'https://fund.eastmoney.com/'
+        'Referer': 'https://fund.eastmoney.com/',
+        'Accept': '*/*',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+        'Connection': 'keep-alive'
       },
-      timeout: 10000,
+      timeout: 15000,
       validateStatus: () => true
     });
+    
+    if (response.status >= 400) {
+      console.error(`[Proxy Error] ${targetUrl} returned status ${response.status}`);
+    }
     
     const contentType = response.headers['content-type'];
     if (contentType) {

@@ -3,6 +3,7 @@
   "framework": "vite",
   "installCommand": "npx pnpm@9.12.3 install --frozen-lockfile",
   "buildCommand": "pnpm run build",
+  "regions": ["hkg1"],
   "rewrites": [
     {
       "source": "/api/fundgz/(.*)",

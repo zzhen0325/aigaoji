@@ -25,12 +25,19 @@ export default async function handler(req, res) {
     const response = await axios.get(targetUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Referer': 'https://finance.sina.com.cn/'
+        'Referer': 'https://finance.sina.com.cn/',
+        'Accept': '*/*',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+        'Connection': 'keep-alive'
       },
-      timeout: 10000,
+      timeout: 15000,
       validateStatus: () => true,
       responseType: 'arraybuffer'
     });
+    
+    if (response.status >= 400) {
+      console.error(`[Proxy Error] ${targetUrl} returned status ${response.status}`);
+    }
     
     const contentType = response.headers['content-type'];
     if (contentType) {
