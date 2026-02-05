@@ -5,48 +5,8 @@
   "buildCommand": "pnpm run build",
   "rewrites": [
     {
-      "source": "/api/fund-search/(.*)",
-      "destination": "/api/fund-search?path=$1"
-    },
-    {
-      "source": "/api/fund-search",
-      "destination": "/api/fund-search"
-    },
-    {
-      "source": "/api/fund-holdings/(.*)",
-      "destination": "/api/fund-holdings?path=$1"
-    },
-    {
-      "source": "/api/fund-holdings",
-      "destination": "/api/fund-holdings"
-    },
-    {
-      "source": "/api/stock-trends/(.*)",
-      "destination": "/api/stock-trends?path=$1"
-    },
-    {
-      "source": "/api/stock-trends",
-      "destination": "/api/stock-trends"
-    },
-    {
-      "source": "/api/stock/(.*)",
-      "destination": "/api/stock?path=$1"
-    },
-    {
-      "source": "/api/stock",
-      "destination": "/api/stock"
-    },
-    {
-      "source": "/api/fundf10/(.*)",
-      "destination": "/api/fundf10?path=$1"
-    },
-    {
-      "source": "/api/fundf10",
-      "destination": "/api/fundf10"
-    },
-    {
       "source": "/api/fundgz/(.*)",
-      "destination": "/api/fundgz?path=$1"
+      "destination": "/api/fundgz?path=/$1"
     },
     {
       "source": "/api/fundgz",
@@ -54,11 +14,51 @@
     },
     {
       "source": "/api/fund/(.*)",
-      "destination": "/api/fund?path=$1"
+      "destination": "/api/fund?path=/$1"
     },
     {
       "source": "/api/fund",
       "destination": "/api/fund"
+    },
+    {
+      "source": "/api/fund-search/(.*)",
+      "destination": "/api/fund-search?path=/$1"
+    },
+    {
+      "source": "/api/fund-search",
+      "destination": "/api/fund-search"
+    },
+    {
+      "source": "/api/fund-holdings/(.*)",
+      "destination": "/api/fund-holdings?path=/$1"
+    },
+    {
+      "source": "/api/fund-holdings",
+      "destination": "/api/fund-holdings"
+    },
+    {
+      "source": "/api/stock-trends/(.*)",
+      "destination": "/api/stock-trends?path=/$1"
+    },
+    {
+      "source": "/api/stock-trends",
+      "destination": "/api/stock-trends"
+    },
+    {
+      "source": "/api/stock/(.*)",
+      "destination": "/api/stock?path=/$1"
+    },
+    {
+      "source": "/api/stock",
+      "destination": "/api/stock"
+    },
+    {
+      "source": "/api/fundf10/(.*)",
+      "destination": "/api/fundf10?path=/$1"
+    },
+    {
+      "source": "/api/fundf10",
+      "destination": "/api/fundf10"
     },
     {
       "source": "/api/local-users",

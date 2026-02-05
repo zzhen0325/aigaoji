@@ -3,19 +3,28 @@ import axios from 'axios';
 export default async function handler(req, res) {
   const { url, query } = req;
   
-  // Try to get path from query param (set by Vercel rewrite) or from the URL
+  // Try to get path from query param (set by Vercel rewrite)
   let subPath = query.path;
+  
+  // If no path in query, try to extract from URL
   if (!subPath) {
-    subPath = url.replace(/^\/api\/fundgz/, '').split('?')[0];
+    subPath = url.split('?')[0].replace(/^\/api\/fundgz/, '');
   }
   
-  // Ensure subPath starts with /
-  if (subPath && !subPath.startsWith('/')) {
-    subPath = '/' + subPath;
+  // Clean up subPath: ensure it doesn't have multiple leading slashes
+  // and handle encoded paths if necessary
+  if (subPath) {
+    subPath = subPath.startsWith('/') ? subPath : '/' + subPath;
+  } else {
+    subPath = '/';
   }
   
-  // Get query string from the original URL
-  const queryString = url.includes('?') ? url.substring(url.indexOf('?')) : '';
+  // Get query string from the original URL, BUT EXCLUDE the 'path' parameter
+  // which was injected by Vercel's rewrite rules
+  const originalUrlObj = new URL(url, 'http://localhost');
+  const searchParams = new URLSearchParams(originalUrlObj.search);
+  searchParams.delete('path');
+  const queryString = searchParams.toString() ? '?' + searchParams.toString() : '';
   
   // Construct target URL
   const targetUrl = `https://fundgz.1234567.com.cn${subPath}${queryString}`;
@@ -44,15 +53,19 @@ export default async function handler(req, res) {
     res.setHeader('Cache-Control', 's-maxage=15, stale-while-revalidate=15');
     res.setHeader('Access-Control-Allow-Origin', '*');
     
-    res.status(response.status).send(response.data);
+    // Check if the response is JSON or text/JS
+    if (typeof response.data === 'object') {
+      res.status(response.status).json(response.data);
+    } else {
+      res.status(response.status).send(response.data);
+    }
   } catch (error) {
     console.error(`[Proxy Error] ${url}:`, error.message);
     res.status(500).json({ 
       error: 'Proxy error', 
       message: error.message,
       url: url,
-      targetUrl: targetUrl,
-      query: query
+      targetUrl: targetUrl
     });
   }
 }

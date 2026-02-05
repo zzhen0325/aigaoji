@@ -5,14 +5,20 @@ export default async function handler(req, res) {
   
   let subPath = query.path;
   if (!subPath) {
-    subPath = url.replace(/^\/api\/stock/, '').split('?')[0];
+    subPath = url.split('?')[0].replace(/^\/api\/stock/, '');
   }
   
-  if (subPath && !subPath.startsWith('/')) {
-    subPath = '/' + subPath;
+  if (subPath) {
+    subPath = subPath.startsWith('/') ? subPath : '/' + subPath;
+  } else {
+    subPath = '/';
   }
   
-  const queryString = url.includes('?') ? url.substring(url.indexOf('?')) : '';
+  const originalUrlObj = new URL(url, 'http://localhost');
+  const searchParams = new URLSearchParams(originalUrlObj.search);
+  searchParams.delete('path');
+  const queryString = searchParams.toString() ? '?' + searchParams.toString() : '';
+  
   const targetUrl = `http://hq.sinajs.cn${subPath}${queryString}`;
   
   try {
@@ -23,7 +29,7 @@ export default async function handler(req, res) {
       },
       timeout: 10000,
       validateStatus: () => true,
-      responseType: 'arraybuffer' // Sina often uses GBK encoding
+      responseType: 'arraybuffer'
     });
     
     const contentType = response.headers['content-type'];
@@ -31,7 +37,11 @@ export default async function handler(req, res) {
       res.setHeader('Content-Type', contentType);
     }
     
-    res.status(response.status).send(response.data);
+    if (typeof response.data === 'object') {
+      res.status(response.status).json(response.data);
+    } else {
+      res.status(response.status).send(response.data);
+    }
   } catch (error) {
     res.status(500).json({ error: 'Proxy error', message: error.message });
   }
