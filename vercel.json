@@ -25,6 +25,10 @@
       "destination": "/api/fundf10"
     },
     {
+      "source": "/api/fundgz(.*)",
+      "destination": "/api/fundgz"
+    },
+    {
       "source": "/api/fund(.*)",
       "destination": "/api/fund"
     },
