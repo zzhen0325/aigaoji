@@ -1,19 +1,5 @@
-import React, { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
-
-type ToastType = 'success' | 'error' | 'info';
-
-type ToastItem = {
-  id: string;
-  message: string;
-  type: ToastType;
-  duration: number;
-};
-
-type ToastContextValue = {
-  showToast: (message: string, type?: ToastType, duration?: number) => void;
-};
-
-const ToastContext = createContext<ToastContextValue | null>(null);
+import React, { useCallback, useMemo, useRef, useState } from 'react';
+import { ToastContext, ToastItem, ToastType } from '@/hooks/useToast';
 
 const typeStyles: Record<ToastType, string> = {
   success: 'bg-green-500/10 text-green-600 border-green-500/30',
@@ -57,12 +43,4 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       </div>
     </ToastContext.Provider>
   );
-};
-
-export const useToast = () => {
-  const ctx = useContext(ToastContext);
-  if (!ctx) {
-    throw new Error('useToast must be used within ToastProvider');
-  }
-  return ctx;
 };

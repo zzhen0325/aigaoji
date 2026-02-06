@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { UserPortfolio, FundValuation } from '@/types';
 import { getFundIntradayFromHoldings, getFundValuation } from '@/api/fund';
@@ -9,12 +9,12 @@ import { AddFundModal } from '@/components/AddFundModal';
 import { TransactionModal } from '@/components/TransactionModal';
 import { ConfirmModal } from '@/components/ConfirmModal';
 import dayjs from 'dayjs';
-import { useToast } from '@/components/ToastProvider';
-import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
+import { useToast } from '@/hooks/useToast';
+import IntradayProfitChart from '@/components/IntradayProfitChart';
 
 const PORTFOLIO_CACHE_TTL = 2 * 60 * 1000;
 const FUND_VALUATION_CONCURRENCY = 4;
-const INTRADAY_BACKFILL_CONCURRENCY = 2;
+const INTRADAY_BACKFILL_CONCURRENCY = 5;
 
 const runWithConcurrency = async <T, R>(items: T[], limit: number, task: (item: T) => Promise<R>) => {
   const results: R[] = new Array(items.length);
@@ -29,29 +29,6 @@ const runWithConcurrency = async <T, R>(items: T[], limit: number, task: (item: 
   });
   await Promise.all(workers);
   return results;
-};
-
-const parseTimeToMinutes = (time: string) => {
-  const [hour, minute] = time.split(':').map(Number);
-  if (Number.isNaN(hour) || Number.isNaN(minute)) return null;
-  return hour * 60 + minute;
-};
-
-const getMarketTypeFromTimes = (times: string[]) => {
-  const minutes = times.map(parseTimeToMinutes).filter((value): value is number => value !== null);
-  const maxMinutes = minutes.length ? Math.max(...minutes) : 0;
-  return maxMinutes >= 16 * 60 ? 'HK' : 'A';
-};
-
-const getMarketTicks = (marketType: 'A' | 'HK') => (
-  marketType === 'HK' ? ['09:30', '12:00', '13:00', '16:00'] : ['09:30', '11:30', '13:00', '15:00']
-);
-
-const isTradingTime = (minutes: number, marketType: 'A' | 'HK') => {
-  if (marketType === 'HK') {
-    return (minutes >= 9 * 60 + 30 && minutes <= 12 * 60) || (minutes >= 13 * 60 && minutes <= 16 * 60);
-  }
-  return (minutes >= 9 * 60 + 30 && minutes <= 11 * 60 + 30) || (minutes >= 13 * 60 && minutes <= 15 * 60);
 };
 
 const getPortfolioCacheKey = (username?: string) => `portfolio-page-cache-${username ?? 'guest'}`;
@@ -116,10 +93,10 @@ const Portfolio: React.FC = () => {
   const [showValues, setShowValues] = useState(true);
   const [intradayProfitData, setIntradayProfitData] = useState<{ time: string; value: number }[]>(() => initialCache?.intradayProfitData || []);
   const [intradayLoading, setIntradayLoading] = useState(false);
+  const valuationRequestId = useRef(0);
 
   const getIntradayStorageKey = (fundCode: string, date: string) => `intraday-${fundCode}-${date}`;
   const getIntradayLatestKey = (fundCode: string) => `intraday-${fundCode}-latest`;
-  const getIntradayBackfillKey = (fundCode: string, date: string) => `intraday-${fundCode}-${date}-backfilled`;
   const getPortfolioIntradayKey = (date: string) => `portfolio-intraday-profit-${date}`;
 
   useEffect(() => {
@@ -185,153 +162,92 @@ const Portfolio: React.FC = () => {
     localStorage.setItem(key, JSON.stringify(data));
   }, []);
 
-  const clearPortfolioIntradayCache = useCallback(() => {
-    const key = getPortfolioIntradayKey(dayjs().format('YYYY-MM-DD'));
-    localStorage.removeItem(key);
-  }, []);
-
   const loadPortfolioIntraday = useCallback(async () => {
     if (portfolio.length === 0) {
       setIntradayProfitData([]);
       return;
     }
+
+    const parseTimeToMinutes = (time: string) => {
+      const [hour, minute] = time.split(':').map(Number);
+      if (Number.isNaN(hour) || Number.isNaN(minute)) return null;
+      return hour * 60 + minute;
+    };
+
     const now = dayjs();
+    const today = now.format('YYYY-MM-DD');
     const marketOpen = isAnyMarketOpenTime(now);
+
+    const manualTotal = portfolio.reduce((sum, item) => {
+      const isUpToDate = item.isProfitUpToDate && item.updateDate === today;
+      if (!isUpToDate) return sum;
+      return sum + (item.manualTodayProfit || 0);
+    }, 0);
+
     const cachedPortfolioIntraday = loadPortfolioIntradayCache();
     if (!marketOpen && cachedPortfolioIntraday.length > 0) {
       setIntradayProfitData(cachedPortfolioIntraday);
       return;
     }
+
     setIntradayLoading(true);
+
     try {
-      const today = now.format('YYYY-MM-DD');
-      const manualTotal = portfolio.reduce((sum, item) => {
+      const seriesList = await runWithConcurrency(portfolio, INTRADAY_BACKFILL_CONCURRENCY, async (item) => {
         const isUpToDate = item.isProfitUpToDate && item.updateDate === today;
-        if (!isUpToDate) return sum;
-        return sum + (item.manualTodayProfit || 0);
-      }, 0);
-
-      const totalDayProfitCurrent = portfolio.reduce((sum, item) => {
-        const isUpToDate = item.isProfitUpToDate && item.updateDate === today;
-        if (isUpToDate) return sum + (item.manualTodayProfit || 0);
-        const valuation = valuations[item.fundCode];
-        const changePercent = valuation?.changePercent || 0;
-        return sum + (item.holdingAmount * (changePercent / 100));
-      }, 0);
-
-      if (totalDayProfitCurrent === 0 && manualTotal === 0) {
-        setIntradayProfitData([]);
-        clearPortfolioIntradayCache();
-        return;
-      }
-
-      const seriesList = await runWithConcurrency(
-        portfolio,
-        INTRADAY_BACKFILL_CONCURRENCY,
-        async (item) => {
-          const isUpToDate = item.isProfitUpToDate && item.updateDate === today;
-          if (isUpToDate) return [];
-          const cached = loadIntradayData(item.fundCode);
-          if (cached.length > 0) return cached;
-          const backfillKey = getIntradayBackfillKey(item.fundCode, today);
-          const shouldSkipBackfill = !marketOpen && Boolean(localStorage.getItem(backfillKey));
-          if (shouldSkipBackfill) return [];
-          try {
-            const fetched = await getFundIntradayFromHoldings(item.fundCode);
-            if (fetched.length > 0) {
-              saveIntradayData(item.fundCode, fetched);
-              return fetched;
-            }
-            return [];
-          } finally {
-            if (!marketOpen) {
-              localStorage.setItem(backfillKey, '1');
-            }
-          }
+        if (isUpToDate) return [];
+        const cached = loadIntradayData(item.fundCode);
+        if (cached.length > 0) return cached;
+        const fetched = await getFundIntradayFromHoldings(item.fundCode);
+        if (fetched.length > 0) {
+          saveIntradayData(item.fundCode, fetched);
+          return fetched;
         }
-      );
+        return [];
+      });
 
-      const timeSet = new Set<string>();
-      const seriesMeta = seriesList.map((series, index) => {
+      const timeMap = new Map<string, number>();
+      seriesList.forEach((series, index) => {
         const item = portfolio[index];
         const isUpToDate = item.isProfitUpToDate && item.updateDate === today;
-        if (isUpToDate || series.length === 0) {
-          return { holdingAmount: item.holdingAmount, points: [] as { time: string; changePercent: number }[] };
-        }
+        if (isUpToDate) return;
         series.forEach((point: { time: string; changePercent: number }) => {
-          timeSet.add(point.time);
+          const profit = item.holdingAmount * (point.changePercent / 100);
+          const existing = timeMap.get(point.time) || 0;
+          timeMap.set(point.time, existing + profit);
         });
-        return {
-          holdingAmount: item.holdingAmount,
-          points: series
-            .map((point: { time: string; changePercent: number }) => ({
-              time: point.time,
-              changePercent: point.changePercent
-            }))
-            .sort((a, b) => {
-              const aMinutes = parseTimeToMinutes(a.time) ?? 0;
-              const bMinutes = parseTimeToMinutes(b.time) ?? 0;
-              return aMinutes - bMinutes;
-            })
-        };
       });
-      const times = Array.from(timeSet).sort((a, b) => {
+
+      const times = Array.from(timeMap.keys()).sort((a, b) => {
         const aMinutes = parseTimeToMinutes(a) ?? 0;
         const bMinutes = parseTimeToMinutes(b) ?? 0;
         return aMinutes - bMinutes;
       });
+
       if (times.length === 0) {
-        if (manualTotal !== 0) {
-          const data = [
-            { time: '09:30', value: manualTotal },
-            { time: '15:00', value: manualTotal }
-          ];
-          setIntradayProfitData(data);
-          savePortfolioIntradayCache(data);
-        } else {
-          setIntradayProfitData([]);
-        }
+        const data = manualTotal !== 0
+          ? [
+              { time: '09:30', value: manualTotal },
+              { time: '15:00', value: manualTotal }
+            ]
+          : [];
+        setIntradayProfitData(data);
+        if (data.length > 0) savePortfolioIntradayCache(data);
         return;
       }
 
-      const pointers = seriesMeta.map(() => 0);
-      const lastChangePercents = seriesMeta.map(() => null as number | null);
-      const data = times.map((time) => {
-        const currentMinutes = parseTimeToMinutes(time) ?? 0;
-        let totalValue = manualTotal;
-        seriesMeta.forEach((meta, index) => {
-          const points = meta.points;
-          let pointer = pointers[index];
-          while (pointer < points.length) {
-            const pointMinutes = parseTimeToMinutes(points[pointer].time) ?? 0;
-            if (pointMinutes > currentMinutes) break;
-            lastChangePercents[index] = points[pointer].changePercent;
-            pointer += 1;
-          }
-          pointers[index] = pointer;
-          const latestChangePercent = lastChangePercents[index];
-          if (latestChangePercent !== null) {
-            totalValue += meta.holdingAmount * (latestChangePercent / 100);
-          }
-        });
-        return { time, value: totalValue };
-      });
-
-      const latestTime = times[times.length - 1];
-      const latestTimeMinutes = parseTimeToMinutes(latestTime) ?? 0;
-      const nowLabel = dayjs().format('HH:mm');
-      const nowMinutes = parseTimeToMinutes(nowLabel) ?? latestTimeMinutes;
-      if (nowMinutes > latestTimeMinutes) {
-        data.push({ time: nowLabel, value: totalDayProfitCurrent });
-      } else if (nowMinutes === latestTimeMinutes && data.length > 0) {
-        data[data.length - 1] = { time: latestTime, value: totalDayProfitCurrent };
-      }
+      const data = times.map((time) => ({
+        time,
+        value: (timeMap.get(time) || 0) + manualTotal
+      }));
       setIntradayProfitData(data);
-      savePortfolioIntradayCache(data);
+      if (data.length > 0) savePortfolioIntradayCache(data);
+    } catch (error) {
+      console.error('Failed to load portfolio intraday', error);
     } finally {
       setIntradayLoading(false);
     }
-  }, [portfolio, valuations, loadIntradayData, saveIntradayData, savePortfolioIntradayCache, clearPortfolioIntradayCache, loadPortfolioIntradayCache]);
+  }, [portfolio, loadIntradayData, saveIntradayData, savePortfolioIntradayCache, loadPortfolioIntradayCache]);
 
   const loadData = useCallback(async () => {
     if (currentUser) {
@@ -388,8 +304,10 @@ const Portfolio: React.FC = () => {
 
         // 2. Profit Update Rollover
         if (item.isProfitUpToDate && item.updateDate !== today) {
+          const dayProfit = item.manualTodayProfit || 0;
           updatedItem = {
             ...updatedItem,
+            holdingProfit: updatedItem.holdingProfit + dayProfit,
             isProfitUpToDate: false,
             manualTodayProfit: 0,
             updateDate: today
@@ -427,28 +345,75 @@ const Portfolio: React.FC = () => {
     loadData();
   }, [loadData]);
 
+  useEffect(() => {
+    if (portfolio.length === 0) return;
+    const today = dayjs().format('YYYY-MM-DD');
+    let hasChanges = false;
+    const updated = portfolio.map(item => {
+      if (!item.updateDate || item.updateDate === today) return item;
+      if (item.isProfitUpToDate) {
+        const dayProfit = item.manualTodayProfit || 0;
+        hasChanges = true;
+        return {
+          ...item,
+          holdingProfit: item.holdingProfit + dayProfit,
+          isProfitUpToDate: false,
+          manualTodayProfit: 0,
+          updateDate: today
+        };
+      }
+      const valuation = valuations[item.fundCode];
+      if (!valuation) return item;
+      const dayProfit = item.holdingAmount * (valuation.changePercent / 100);
+      hasChanges = true;
+      return {
+        ...item,
+        holdingAmount: item.holdingAmount + dayProfit,
+        holdingProfit: item.holdingProfit + dayProfit,
+        isProfitUpToDate: false,
+        manualTodayProfit: 0,
+        updateDate: today
+      };
+    });
+    if (!hasChanges) return;
+    setPortfolio(updated);
+    if (currentUser) {
+      void saveUserPortfolio(currentUser.username, updated);
+    } else {
+      const key = getPortfolioKey();
+      localStorage.setItem(key, JSON.stringify(updated));
+    }
+  }, [portfolio, valuations, currentUser]);
+
   // Fetch valuations
   const fetchValuations = useCallback(async () => {
     if (portfolio.length === 0) return;
+    const requestId = (valuationRequestId.current += 1);
     setLoading(true);
     try {
-      const results = await runWithConcurrency(
-        portfolio,
-        FUND_VALUATION_CONCURRENCY,
-        (item) => getFundValuation(item.fundCode)
-      );
-      
-      const newValuations: Record<string, FundValuation> = {};
-      results.forEach(res => {
-        if (res) {
-          newValuations[res.fundCode] = res;
+      let nextIndex = 0;
+      const workerCount = Math.min(FUND_VALUATION_CONCURRENCY, portfolio.length);
+      const workers = new Array(workerCount).fill(null).map(async () => {
+        while (nextIndex < portfolio.length) {
+          const current = nextIndex;
+          nextIndex += 1;
+          const item = portfolio[current];
+          const result = await getFundValuation(item.fundCode);
+          if (!result) continue;
+          if (requestId !== valuationRequestId.current) return;
+          setValuations(prev => ({
+            ...prev,
+            [result.fundCode]: result
+          }));
         }
       });
-      setValuations(newValuations);
+      await Promise.all(workers);
     } catch (error) {
       console.error(error);
     } finally {
-      setLoading(false);
+      if (requestId === valuationRequestId.current) {
+        setLoading(false);
+      }
     }
   }, [portfolio]);
 
@@ -476,7 +441,7 @@ const Portfolio: React.FC = () => {
       let timer: number | undefined;
       const schedule = () => {
         void loadPortfolioIntraday();
-        const nextDelay = isAnyMarketOpenTime(dayjs()) ? 5000 : 60000;
+        const nextDelay = isAnyMarketOpenTime(dayjs()) ? 15000 : 60000;
         timer = window.setTimeout(schedule, nextDelay);
       };
       schedule();
@@ -687,15 +652,26 @@ const Portfolio: React.FC = () => {
   const formatPercent = (value: number) => `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`;
   const dayProfitPercentLabel = showValues ? formatPercent(totalDayProfitPercent) : '****';
   const realtimeProfitPercentLabel = showValues ? formatPercent(totalRealtimeProfitPercent) : '****';
-  const nonZeroIntradayProfitData = intradayProfitData.filter(point => Math.abs(point.value) > 0.000001);
-  const baseIntradayProfitData = nonZeroIntradayProfitData.length ? nonZeroIntradayProfitData : intradayProfitData;
-  const intradayMarketType = getMarketTypeFromTimes(baseIntradayProfitData.map(point => point.time));
-  const intradayAxisTicks = getMarketTicks(intradayMarketType);
-  const filteredIntradayProfitData = baseIntradayProfitData.filter(point => {
-    const minutes = parseTimeToMinutes(point.time);
-    return minutes !== null && isTradingTime(minutes, intradayMarketType);
-  });
-  const chartIntradayProfitData = filteredIntradayProfitData.length ? filteredIntradayProfitData : baseIntradayProfitData;
+  const normalizedIntradayProfitData = intradayProfitData
+    .map(point => ({
+      time: point.time,
+      value: typeof point.value === 'number' ? point.value : parseFloat(String(point.value))
+    }))
+    .filter(point => Number.isFinite(point.value));
+  
+  const chartIntradayProfitData = React.useMemo(() => {
+    const parseTimeToMinutes = (time: string) => {
+      const [hour, minute] = time.split(':').map(Number);
+      if (Number.isNaN(hour) || Number.isNaN(minute)) return null;
+      return hour * 60 + minute;
+    };
+    if (normalizedIntradayProfitData.length === 0) return [];
+    return [...normalizedIntradayProfitData].sort((a, b) => {
+      const aMinutes = parseTimeToMinutes(a.time) ?? 0;
+      const bMinutes = parseTimeToMinutes(b.time) ?? 0;
+      return aMinutes - bMinutes;
+    });
+  }, [normalizedIntradayProfitData]);
   
   return (
     <div className="space-y-8 max-w-6xl mx-auto pb-12">
@@ -759,7 +735,7 @@ const Portfolio: React.FC = () => {
                 </div>
 
                 <div className="bg-google-surface dark:bg-google-surface-dark p-5 sm:p-8 rounded-[24px] flex flex-col justify-between">
-                     <div className="text-google-text-secondary dark:text-google-text-secondary-dark font-medium mb-1 text-sm sm:text-base">预估当日盈亏</div>
+                     <div className="text-google-text-secondary dark:text-google-text-secondary-dark font-medium mb-1 text-sm sm:text-base">当日盈亏</div>
                      <div className="flex items-center justify-between mt-2">
                         <div className="flex items-center gap-2">
                           <div className={`text-2xl sm:text-3xl font-normal ${totalDayProfit >= 0 ? 'text-google-red dark:text-google-red-dark' : 'text-google-green dark:text-google-green-dark'}`}>
@@ -778,7 +754,7 @@ const Portfolio: React.FC = () => {
                 </div>
 
                 <div className="bg-google-surface dark:bg-google-surface-dark p-5 sm:p-8 rounded-[24px] flex flex-col justify-between">
-                     <div className="text-google-text-secondary dark:text-google-text-secondary-dark font-medium mb-1 text-sm sm:text-base">预估持有盈亏</div>
+                     <div className="text-google-text-secondary dark:text-google-text-secondary-dark font-medium mb-1 text-sm sm:text-base">持有盈亏</div>
                      <div className="flex items-center justify-between mt-2">
                         <div className="flex items-center gap-2">
                           <div className={`text-2xl sm:text-3xl font-normal ${totalRealtimeProfit >= 0 ? 'text-google-red dark:text-google-red-dark' : 'text-google-green dark:text-google-green-dark'}`}>
@@ -810,76 +786,12 @@ const Portfolio: React.FC = () => {
               </div>
             </div>
             <div className="h-32 sm:h-40 mt-4 w-full">
-              {chartIntradayProfitData.length > 0 ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={chartIntradayProfitData} margin={{ left: 16, right: 16, top: 4, bottom: 0 }}>
-                    <defs>
-                      <linearGradient id="colorDayProfit" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor={strokeColor} stopOpacity={0.12} />
-                        <stop offset="95%" stopColor={strokeColor} stopOpacity={0} />
-                      </linearGradient>
-                    </defs>
-                    <XAxis
-                      dataKey="time"
-                      ticks={intradayAxisTicks}
-                      tick={(props: any) => {
-                        const value: string = props?.payload?.value ?? '';
-                        const first = intradayAxisTicks[0];
-                        const last = intradayAxisTicks[intradayAxisTicks.length - 1];
-                        const text = typeof value === 'string' ? value.replace(/^0/, '') : String(value);
-                        const isFirst = value === first;
-                        const isLast = value === last;
-                        const textAnchor = isFirst ? 'start' : isLast ? 'end' : 'middle';
-                        const dx = isFirst ? 4 : isLast ? -4 : 0;
-                        return (
-                          <text
-                            x={props.x}
-                            y={props.y}
-                            dy={10}
-                            dx={dx}
-                            textAnchor={textAnchor}
-                            fill={axisTickColor}
-                            fontSize={10}
-                          >
-                            {text}
-                          </text>
-                        );
-                      }}
-                      tickMargin={8}
-                      padding={{ left: 6, right: 6 }}
-                      axisLine={false}
-                      tickLine={false}
-                      interval={0}
-                      minTickGap={0}
-                    />
-                    <YAxis domain={['auto', 'auto']} hide />
-                    <Tooltip
-                      contentStyle={{
-                        backgroundColor: '#1E1F20',
-                        borderColor: '#1E1F20',
-                        borderRadius: '12px',
-                        color: '#fff',
-                        boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)'
-                      }}
-                      itemStyle={{ color: '#E3E3E3' }}
-                      formatter={(value: number) => [showValues ? value.toFixed(2) : '****', '当日盈亏']}
-                      labelFormatter={(label) => `${label}`}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="value"
-                      stroke={strokeColor}
-                      fillOpacity={1}
-                      fill="url(#colorDayProfit)"
-                      strokeWidth={2}
-                    />
-                  </AreaChart>
-                </ResponsiveContainer>
-              ) : (
-                <div className="h-full flex items-center justify-center text-sm text-google-text-secondary dark:text-google-text-secondary-dark">
-                  暂无分时数据
-                </div>
-              )}
+              <IntradayProfitChart
+                data={chartIntradayProfitData}
+                strokeColor={strokeColor}
+                axisTickColor={axisTickColor}
+                showValues={showValues}
+              />
             </div>
           </div>
 

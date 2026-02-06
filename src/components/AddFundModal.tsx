@@ -5,7 +5,7 @@ import { FundInfo, UserPortfolio } from '@/types';
 import { useUserStore, getPortfolioKey } from '@/store/userStore';
 import { getUserPortfolio, saveUserPortfolio } from '@/api/portfolio';
 import dayjs from 'dayjs';
-import { useToast } from '@/components/ToastProvider';
+import { useToast } from '@/hooks/useToast';
 
 interface AddFundModalProps {
   isOpen: boolean;

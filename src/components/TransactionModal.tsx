@@ -5,7 +5,7 @@ import { useUserStore } from '@/store/userStore';
 import { getUserPortfolio, saveUserPortfolio } from '@/api/portfolio';
 import { getTradeStatusInfo } from '@/utils/tradingUtils';
 import dayjs from 'dayjs';
-import { useToast } from '@/components/ToastProvider';
+import { useToast } from '@/hooks/useToast';
 
 interface TransactionModalProps {
   isOpen: boolean;

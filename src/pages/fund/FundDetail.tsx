@@ -5,6 +5,7 @@ import { FundInfo, FundValuation, UserPortfolio } from '@/types';
 import { ArrowUp, ArrowDown, RefreshCw, Clock, Info, Plus, BarChart3, ArrowRightLeft } from 'lucide-react';
 import dayjs from 'dayjs';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
+import type { XAxisTickContentProps } from 'recharts';
 import { useUserStore } from '../../store/userStore';
 import { getUserPortfolio } from '../../api/portfolio';
 import { TransactionModal } from '../../components/TransactionModal';
@@ -233,7 +234,6 @@ const FundDetail: React.FC = () => {
   const estimatedValue = hasEstimatedValue ? valuation!.estimatedValue : info.netWorth;
   const changePercent = Number.isFinite(valuation?.changePercent) ? valuation!.changePercent : 0;
   const changeValue = Number.isFinite(valuation?.change) ? valuation!.change : 0;
-  const totalWeight = Number.isFinite(valuation?.totalWeight) ? valuation!.totalWeight : 0;
   const holdings = valuation?.holdings || [];
   const formatNumber = (value: number | undefined, digits: number) => (
     Number.isFinite(value) ? value!.toFixed(digits) : '--'
@@ -338,7 +338,7 @@ const FundDetail: React.FC = () => {
                     <XAxis 
                         dataKey="time" 
                         ticks={intradayAxisTicks}
-                        tick={(props: any) => {
+                        tick={(props: XAxisTickContentProps) => {
                           const value: string = props?.payload?.value ?? '';
                           const first = intradayAxisTicks[0];
                           const last = intradayAxisTicks[intradayAxisTicks.length - 1];

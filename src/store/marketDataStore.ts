@@ -26,6 +26,7 @@ export const useMarketDataStore = create<MarketDataState>((set) => ({
     try {
       localStorage.setItem(STORAGE_KEY, source);
     } catch {
+      void 0;
     }
     set({ source });
   }

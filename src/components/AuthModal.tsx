@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { X, User, Lock } from 'lucide-react';
 import { useUserStore } from '../store/userStore';
-import { useToast } from '@/components/ToastProvider';
+import { useToast } from '@/hooks/useToast';
 
 interface AuthModalProps {
   isOpen: boolean;

@@ -204,6 +204,76 @@ export const getFundDetails = async (code: string): Promise<FundInfo | null> => 
   return request;
 };
 
+const fetchHoldingsFromFundmob = async (code: string): Promise<FundHolding[]> => {
+  try {
+    const url = `/api/fund-holdings/FundMNewApi/FundMNInverstPosition?FCODE=${code}&PLATFORM=12&DEVICEID=1`;
+    const response = await axios.get(url, { timeout: 8000, validateStatus: () => true });
+    if (response.status >= 400) return [];
+    const data = response.data;
+    const list = Array.isArray(data?.Datas) ? data.Datas : [];
+    if (list.length === 0) return [];
+    return list
+      .map((item: { GPDM?: string; GPJC?: string; JZBL?: string; MARKET?: string | number }) => {
+        const stockCodeRaw = item.GPDM ? String(item.GPDM) : '';
+        const weight = item.JZBL ? parseFloat(item.JZBL) : 0;
+        if (!stockCodeRaw || !Number.isFinite(weight) || weight <= 0) return null;
+        const stockCode = normalizeMarketPrefix(item.MARKET, stockCodeRaw);
+        return {
+          stockCode,
+          stockName: item.GPJC || 'Unknown',
+          weight,
+          market: item.MARKET ? String(item.MARKET) : ''
+        } as FundHolding;
+      })
+      .filter((item): item is FundHolding => Boolean(item));
+  } catch {
+    return [];
+  }
+};
+
+const fetchHoldingsFromFundf10 = async (code: string): Promise<FundHolding[]> => {
+  for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt += 1) {
+    try {
+      const url = `/api/fundf10/FundArchivesDatas.aspx?type=jjcc&code=${code}&topline=10`;
+      const response = await axios.get(url, { timeout: 15000 });
+      const script = response.data;
+      const contentMatch = script.match(/content\s*:\s*"((?:[^"\\]|\\.)*)"/);
+      if (!contentMatch) {
+        if (attempt < RETRY_DELAYS.length) {
+          await sleep(RETRY_DELAYS[attempt]);
+          continue;
+        }
+        return [];
+      }
+
+      const html = contentMatch[1]
+        .replace(/\\"/g, '"')
+        .replace(/\\n/g, '\n')
+        .replace(/\\r/g, '\r')
+        .replace(/\\t/g, '\t')
+        .replace(/\\\//g, '/');
+
+      const holdings = parseHoldingsFromHTML(html);
+      const isExplicitEmpty = html.includes('暂无数据');
+      if (holdings.length === 0 && !isExplicitEmpty) {
+        if (attempt < RETRY_DELAYS.length) {
+          await sleep(RETRY_DELAYS[attempt]);
+          continue;
+        }
+        return [];
+      }
+      return holdings;
+    } catch (error) {
+      if (attempt < RETRY_DELAYS.length && isRetryableError(error)) {
+        await sleep(RETRY_DELAYS[attempt]);
+        continue;
+      }
+      return [];
+    }
+  }
+  return [];
+};
+
 export const getFundHoldings = async (code: string): Promise<FundHolding[]> => {
   const cached = holdingCache.get(code);
   if (cached && cached.expiresAt > Date.now()) {
@@ -214,85 +284,17 @@ export const getFundHoldings = async (code: string): Promise<FundHolding[]> => {
 
   const request = (async () => {
     try {
-      for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt += 1) {
-        try {
-          const source = getMarketDataSource();
-          if (source === 'fundmob') {
-            const url = `/api/fund-holdings/FundMNewApi/FundMNInverstPosition?FCODE=${code}&PLATFORM=12&DEVICEID=1`;
-            const response = await axios.get(url, { timeout: 15000 });
-            const data = response.data;
-            const list = Array.isArray(data?.Datas) ? data.Datas : [];
-            if (list.length === 0) {
-              if (attempt < RETRY_DELAYS.length) {
-                await sleep(RETRY_DELAYS[attempt]);
-                continue;
-              }
-              return [];
-            }
-            const holdings = list
-              .map((item: { GPDM?: string; GPJC?: string; JZBL?: string; MARKET?: string | number }) => {
-                const stockCodeRaw = item.GPDM ? String(item.GPDM) : '';
-                const weight = item.JZBL ? parseFloat(item.JZBL) : 0;
-                if (!stockCodeRaw || !Number.isFinite(weight) || weight <= 0) return null;
-                const stockCode = normalizeMarketPrefix(item.MARKET, stockCodeRaw);
-                return {
-                  stockCode,
-                  stockName: item.GPJC || 'Unknown',
-                  weight,
-                  market: item.MARKET ? String(item.MARKET) : ''
-                } as FundHolding;
-              })
-              .filter((item): item is FundHolding => Boolean(item));
-            if (holdings.length === 0) {
-              if (attempt < RETRY_DELAYS.length) {
-                await sleep(RETRY_DELAYS[attempt]);
-                continue;
-              }
-              return [];
-            }
-            holdingCache.set(code, { expiresAt: Date.now() + HOLDING_TTL, value: holdings });
-            return holdings;
-          }
-          const url = `/api/fundf10/FundArchivesDatas.aspx?type=jjcc&code=${code}&topline=10`;
-          const response = await axios.get(url, { timeout: 15000 });
-          const script = response.data;
-          const contentMatch = script.match(/content\s*:\s*"((?:[^"\\]|\\.)*)"/);
-          if (!contentMatch) {
-            if (attempt < RETRY_DELAYS.length) {
-              await sleep(RETRY_DELAYS[attempt]);
-              continue;
-            }
-            return [];
-          }
-
-          const html = contentMatch[1]
-            .replace(/\\"/g, '"')
-            .replace(/\\n/g, '\n')
-            .replace(/\\r/g, '\r')
-            .replace(/\\t/g, '\t')
-            .replace(/\\\//g, '/');
-
-          const holdings = parseHoldingsFromHTML(html);
-          const isExplicitEmpty = html.includes('暂无数据');
-          if (holdings.length === 0 && !isExplicitEmpty) {
-            if (attempt < RETRY_DELAYS.length) {
-              await sleep(RETRY_DELAYS[attempt]);
-              continue;
-            }
-            return [];
-          }
+      const source = getMarketDataSource();
+      if (source === 'fundmob') {
+        const holdings = await fetchHoldingsFromFundmob(code);
+        if (holdings.length > 0) {
           holdingCache.set(code, { expiresAt: Date.now() + HOLDING_TTL, value: holdings });
           return holdings;
-        } catch (error) {
-          if (attempt < RETRY_DELAYS.length && isRetryableError(error)) {
-            await sleep(RETRY_DELAYS[attempt]);
-            continue;
-          }
-          console.error('[API] Failed to fetch holdings:', error);
-          return [];
         }
       }
-      return [];
+      const fallbackHoldings = await fetchHoldingsFromFundf10(code);
+      holdingCache.set(code, { expiresAt: Date.now() + HOLDING_TTL, value: fallbackHoldings });
+      return fallbackHoldings;
     } finally {
       holdingInflight.delete(code);
     }

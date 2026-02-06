@@ -4,7 +4,7 @@ import { Search, PieChart, Menu, X, Sun, Moon, BadgeJapaneseYen, LogOut } from '
 import { useTheme } from '../hooks/useTheme';
 import { useUserStore } from '../store/userStore';
 import { AuthModal } from './AuthModal';
-import { useToast } from '@/components/ToastProvider';
+import { useToast } from '@/hooks/useToast';
 
 const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const location = useLocation();
