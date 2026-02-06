@@ -1,7 +1,6 @@
 import React from 'react';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, Scatter } from 'recharts';
-import type { XAxisTickContentProps, ValueType, NameType, Payload } from 'recharts';
-import type { ScatterShapeProps } from 'recharts/types/util/ScatterUtils';
+import type { XAxisTickContentProps, ScatterShapeProps } from 'recharts';
 
 export interface IntradayProfitChartProps {
   data: { time: string; value: number }[];
@@ -111,7 +110,8 @@ const IntradayProfitChart: React.FC<IntradayProfitChartProps> = ({
             boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)'
           }}
           itemStyle={{ color: '#E3E3E3' }}
-          formatter={(value: ValueType, _name: NameType, item: Payload<ValueType, NameType>) => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          formatter={(value: any, _name: any, item: any) => {
             if (item?.dataKey === undefined || item?.name === 'scatter') {
               return [null, null];
             }
